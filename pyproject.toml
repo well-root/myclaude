@@ -7,10 +7,22 @@ authors = [
     { name = "17254", email = "1725424087@qq.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
-
+dependencies = [
+    "anthropic>=0.25",
+    "httpx[socks]>=0.28.1",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+    "textual>=0.75",
+]
+#进程的入口
 [project.scripts]
-myclaude = "myclaude:main"
+myclaude = "myclaude.cli.main:main"
+myclaude-core="myclaude.core.app:run"
+myclaude-tui="myclaude.tui._main_:main"
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
