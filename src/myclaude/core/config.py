@@ -3,6 +3,9 @@ import os
 from dotenv import load_dotenv
 import tomllib
 
+from pydantic.dataclasses import dataclass
+
+
 def get_config()->mycladueconfig:
     config=myclaudeconfig()
     load_dotenv(".env",override=False)
@@ -15,5 +18,10 @@ def get_config()->mycladueconfig:
         _apply_toml(config,data)
     _apply_toml(config)
     return config
+
+@dataclass
+class myclaudeconfig:
+    pass
+
 
 
