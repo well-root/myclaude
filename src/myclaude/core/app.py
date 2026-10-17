@@ -1,114 +1,81 @@
 #daemon 的监听TCP
 from __future__ import annotations
-
+import time
 import asyncio
 import datetime
-import fnmatch
 import json
 import logging
 import signal
-import sys
-import time
-from datetime import UTC
-from pathlib import Path
 from typing import Any
+import sys
 
-from pydantic import BaseModel
-
-from myclaude.core.bus.commands import PingCommand
-from myclaude.core.bus.envelope import INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, JsonRpcSuccess
+import myclaude
+from myclaude.core.bus.commands import PongResult
 from myclaude.core.config import get_config
+from myclaude.core.logging_setup import setup_logging
+from myclaude.core.transport.socket_server import SocketServer
 
+
+logger=logging.getLogger(__name__)
 
 class coreAPP:
-    async def run(self)->None:
+    def run(self)->None:
 
         self._start_time=time.monotonic()
-        config=get_config()
-        setup_logging(config)
 
-        server=socketserver(config.host, config.port)
-        server.register("core.ping",self._ping_handler)
+    #处理core.ping请求 然后返回服务的版本 运行市场和接收时间
+    async def _handle_line(self,params:dict[str,Any])->PongResult:
 
-        addr=await server.start()
-        logger.info("myclaude %s listening addr=%s",myclaude._version_,addr)
-
-        shutdown=asyncio.Event()
-        loop=asyncio.get_running_loop()
-        loop.add_signal_handler(signal.SIGINT,shutdown.set)
-        loop.add_signal_handler(signal.SIGTERM,shutdown.set)
-
-
-
-        await shutdown.wait()
-        await server.stop()
-
-    #定义一个异步的启动装置(监听器) 如果已经有daemon在跑那就直接推出，否则开始跑start
-    async def start(self)->str:
-        try:
-            _r,w=await asyncio.open_connection(self._host,self._port)
-            w.close()
-            await w.wait_closed()
-            raise SystemExit(f"core already running at {self._host}:{self._post}")
-        except(ConnectionResetError,OSError):
-            pass
-
-        self._server=await asyncio.start_server(
-            self._handle_connection,
-            host=self._host,
-            port=self._port,
-            limit=_MAX_LINE_BYTES,
-        )
-
-        return f"{self._host}:{self._port}"
-#读取任务
-    
-    async def _read_loop(self,
-        reader:asyncio.StreamReader,
-        writer:asyncio.StreamWriter,
-    )->None:
-        while True:
-            line=await reader.readline()
-            if not line:
-                return
-            await self._handle_line(line,writer)
-
-    async def _handle_line(self,line:bytes,writer:asyncio.StreamWriter)->None:
-        try:
-            raw=json.load(line)
-        except json.JSONDecodeError as e:
-            await self._send(writer,make_error(None,INVALID_REQUEST,"Invalid Request",str(e)))
-            return
-
-        Handle=self._handlers.get(req.method,)
-        if Handle is None:
-            await self._send(
-                writer,
-                make_error(req.id,METHOD_NOT_FOUND,f"Method not found:{req.method}"),
-            )
-            return
-
-        from pydantic import ValidationError
-        try:
-            result=await handler(res.params)
-        except ValidationError as e:
-            await self._send(writer, make_error(req.id, INVALID_PARAMS, "Invalid params", str(e)))
-            return
-        except Exception:
-            await self._send(writer, make_error(req.id, INVALID_ERROR, "Invalid error"))
-            return
-
-        await self._send(writer,JsonRpcSuccess(id=req.id),result=result.model_dump())
-
-    async def _ping_handler(self,params:dict[str,Any]):
-        cmd=PingCommand.model_validate(params)
-        logger.debug("ping from %s",cmd.client)
-        import myclaude
+        client = params.get("client", "unknown")
+        logger.debug("ping from %s", client)
         return PongResult(
             server_version=myclaude.__version__,
-            uptime_ms=int((time.monotonic()-self._start_time)*1000),
+            uptime_ms=int((time.monotonic() - self._start_time) * 1000),
             received_at=datetime.datetime.now(datetime.UTC).isoformat(),
-
         )
+
+
+    async def run(self)->None:
+        self._start_time=time.monotonic()
+        config = get_config()
+        setup_logging(config)
+
+        server = SocketServer(config.host, config.port)
+        server.register("core.ping", self._handle_line)
+
+        addr=await server.start()
+        logger.info("myclaude-core %s listening addr=%s", myclaude.__version__, addr)
+        logger.info("config: %s", config)
+
+        loop = asyncio.get_running_loop()
+        shutdown = asyncio.Event()
+
+        if sys.platform == "win32":
+            # Windows 的 asyncio 不支持 add_signal_handler，
+            # 改用标准 signal 模块，再跨线程回投到事件循环
+            def _on_signal(_signum: int, _frame: Any) -> None:
+                loop.call_soon_threadsafe(shutdown.set)
+
+            signal.signal(signal.SIGINT, _on_signal)
+            signal.signal(signal.SIGBREAK, _on_signal)
+
+        else:
+            loop.add_signal_handler(signal.SIGINT, shutdown.set)
+            loop.add_signal_handler(signal.SIGTERM, shutdown.set)
+
+        await shutdown.wait()
+
+        logger.info("shutting down")
+        await server.stop()
+
+    #启动coreapp
+def run()->None:
+    asyncio.run(coreAPP.run())
+
+
+
+
+
+
 
 
