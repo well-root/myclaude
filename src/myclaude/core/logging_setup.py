@@ -4,7 +4,8 @@ import logging.handlers
 import sys
 from pathlib import Path
 from myclaude.core.config import myclaudeconfig
-#定义格式话
+#定义格式话 日志模板 日志的记录
+
 _TEXT_FMT = 'level=%(levelname)s ts=%(asctime)s source=%(name)s msg="%(message)s"'
 _JSON_FMT = '{"level":"%(levelname)s","ts":"%(asctime)s","source":"%(name)s","msg":"%(message)s"}'
 
