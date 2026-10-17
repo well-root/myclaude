@@ -1,16 +1,19 @@
 from __future__ import annotations
 import asyncio
-
+import sys
 import time
 import json
 
-from  ...core.config import myclaudeconfig
+from myclaude.core.bus.commands import PongResult
+import myclaude
+from myclaude.core.bus.commands import PongResult
+from myclaude.core.bus.envelope import JsonRpcError, JsonRpcSuccess
+from myclaude.core.config import myclaudeconfig
 
 def cmd_ping(config:myclaudeconfig)->None:
     try:
         asyncio.run(_ping(config))
     except(ConnectionResetError,OSError):
-        import sys
         print(f"error:core not running({config.host}:{config.port})",file=sys.stderr)
         sys.exit(1)
 
@@ -33,3 +36,16 @@ async def _ping(config:myclaudeconfig)->None:
 
     line=await asyncio.wait_for(reader.readline(),timeout=10.0)
     latency_ms=int((time.monotonic()-t0)*1000)
+
+    #关闭资源
+    writer.close()
+    await writer.wait_closed()
+
+    raw=json.loads(line)
+    if "error" in raw:
+        err=JsonRpcError.model_validate(raw)
+        print(f"error: {err.error.code} {err.error.message}", file=sys.stderr)
+        sys.exit(1)
+
+    resp = JsonRpcSuccess.model_validate(raw)
+    result=PongResult.model_validate(resp.result)

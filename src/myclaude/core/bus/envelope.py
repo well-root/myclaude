@@ -43,3 +43,7 @@ INVALID_PARAMS = -32602   # 参数错误
 INTERNAL_ERROR = -32603   # 服务器内部错误
 
 
+#构建一个JSON-RPC错误相应的对象
+def make_error(id: str | None, code: int, message: str, data: Any = None) -> JsonRpcError:
+    return JsonRpcError(id=id, error=JsonRpcErrorObject(code=code, message=message, data=data))
+
