@@ -18,7 +18,7 @@ dependencies = [
 [project.scripts]
 myclaude = "myclaude.cli.main:main"
 myclaude-core="myclaude.core.app:run"
-myclaude-tui="myclaude.tui._main_:main"
+myclaude-tui="myclaude.tui.__main__:main"
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
