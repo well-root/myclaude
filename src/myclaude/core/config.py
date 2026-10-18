@@ -14,12 +14,27 @@ _DEFAULT_LOG_LEVEL = "INFO"
 _DEFAULT_LOG_FILE = "~/.myclaude/logs/core.log"
 _DEFAULT_LOG_FORMAT = "text"  # "text" | "json"
 _DEFAULT_CONFIG_PATH = "~/.myclaude/config.toml"
+_DEFAULT_MAX_STEP=10
+_DEFAULT_MODEL="CLAUDE-OPUS-4.7"
+#定义LLM和Agent
+@dataclass
+class AgentConfig:
+    max_step: int = _DEFAULT_MAX_STEP
+
+@dataclass
+class LlmConfig:
+    default_model: str = _DEFAULT_MODEL
+    router: str = "static"  # "static" | "rule_based" (S4) | "cost_budget" (S6)
+
+
 #定义loggingconfig
 @dataclass
 class LoggingConfig:
     level: str = _DEFAULT_LOG_LEVEL
     file: str = _DEFAULT_LOG_FILE
     format: str = _DEFAULT_LOG_FORMAT
+    agent: AgentConfig = field(default_factory=AgentConfig)
+    llm: LlmConfig = field(default_factory=LlmConfig)
 #定义myclaudeconfig
 @dataclass
 class myclaudeconfig:
@@ -112,6 +127,25 @@ def _apply_env(config:myclaudeconfig)->None:
         log_format=os.environ.get("MYCLAUDE_LOG_FORMAT")
         if log_format is not None:
             config.logging.level=log_level
+
+        max_steps_str = os.environ.get("MYCLAUDE_MAX_STEPS")
+        if max_steps_str is not None:
+            try:
+                val = int(max_steps_str)
+                if val <= 0:
+                    raise SystemExit(
+                        "Config error: MYCLAUDE_MAX_STEPS must be a positive integer,"
+                        f" got: {max_steps_str!r}"
+                    )
+                config.agent.max_steps = val
+            except ValueError:
+                raise SystemExit(
+                    f"Config error: MYCLAUDE_MAX_STEPS must be an integer, got: {max_steps_str!r}"
+                )
+
+        default_model = os.environ.get("MYCLAUDE_LLM_DEFAULT_MODEL")
+        if default_model is not None:
+            config.llm.default_model = default_model
 
 
 
