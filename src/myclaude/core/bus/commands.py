@@ -10,7 +10,7 @@ class PingCommand(BaseModel):
 
 class PongResult(BaseModel):
     server_version:str
-    uptime_ms:str
+    uptime_ms:int
     received_at:str
 #根据type()来决定类型的判别联合
 Command=Annotated[
