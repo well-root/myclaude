@@ -76,10 +76,10 @@ class LLMTokenEvent(BaseModel):
 class LLMUserEvent(BaseModel):
     type:Literal["llm.user"]="llm.user"
     run_id:str
-    input_token:int
-    output_token:int
-    cache_read_input_token:int
-    cache_read_output_token:int
+    input_tokens:int
+    output_tokens:int
+    cache_read_input_tokens:int
+    cache_read_output_tokens:int
     ts:str
 
 class LLMModelSelectedEvent(BaseModel):
