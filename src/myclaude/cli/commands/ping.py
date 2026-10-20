@@ -49,3 +49,4 @@ async def _ping(config:myclaudeconfig)->None:
 
     resp = JsonRpcSuccess.model_validate(raw)
     result=PongResult.model_validate(resp.result)
+    print(f"pong server={result.server_version} uptime={result.uptime_ms}ms received_at={result.received_at}")

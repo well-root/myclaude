@@ -18,11 +18,8 @@ from myclaude.core.transport.socket_server import SocketServer
 
 logger=logging.getLogger(__name__)
 
+
 class coreAPP:
-    def run(self)->None:
-
-        self._start_time=time.monotonic()
-
     #处理core.ping请求 然后返回服务的版本 运行市场和接收时间
     async def _handle_line(self,params:dict[str,Any])->PongResult:
 
@@ -70,7 +67,7 @@ class coreAPP:
 
     #启动coreapp
 def run()->None:
-    asyncio.run(coreAPP.run())
+    asyncio.run(coreAPP().run())
 
 
 

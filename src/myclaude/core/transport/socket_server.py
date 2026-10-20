@@ -41,21 +41,21 @@ class SocketServer:
         # 定义一个异步的启动装置(监听器) 如果已经有daemon在跑那就直接推出，否则开始跑start
     async def start(self) -> str:
         try:
-            _r, w = await asyncio.open_connection(self._host, self._port)
+            _r, w = await asyncio.open_connection(self.host, self.port)
             w.close()
             await w.wait_closed()
-            raise SystemExit(f"core already running at {self._host}:{self._post}")
+            raise SystemExit(f"core already running at {self.host}:{self.port}")
         except(ConnectionResetError, OSError):
             pass
 
         self._server = await asyncio.start_server(
             self._handle_connection,
-            host=self._host,
-            port=self._port,
+            host=self.host,
+            port=self.port,
             limit=_MAX_LINE_BYTES,
         )
 
-        return f"{self._host}:{self._port}"
+        return f"{self.host}:{self.port}"
         #关闭服务器
     async def stop(self) -> None:
         if self._server is None:
@@ -87,20 +87,20 @@ class SocketServer:
 
 
     #持续读取换行分割的json并进行分发处理
-    async def _read_loop(self,reader: asyncio.StreamReader, writer: asyncio.StreamWriter)->None:
+    async def _read_loop(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         while True:
             try:
-                line=await reader.readline()
-            except asyncio.LimitOverrunError:
+                line = await reader.readline()
+            except ValueError:
                 await self._send(writer, make_error(None, INVALID_REQUEST, "Request too large"))
                 return
 
             if not line:
                 return
-            await self._read_loop(reader, writer)
+            await self._handle_line(line, reader, writer)
 
 #解析单行的json-rpc并返回对于的handler将结果返回客户端
-    async def _handle_line(self,reader: asyncio.StreamReader, writer: asyncio.StreamWriter)->None:
+    async def _handle_line(self,line,reader: asyncio.StreamReader, writer: asyncio.StreamWriter)->None:
         try:
             raw:Any=json.loads(line)
         except json.JSONDecodeError as e:
