@@ -110,8 +110,8 @@ class AnthropicProvider:
             tool_calls=tool_calls,
             text="".join(text_parts),
             usage=UsageStats(
-                input_tokens=usage.input_token,
-                output_tokens=usage.output_token,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_write,
             ),

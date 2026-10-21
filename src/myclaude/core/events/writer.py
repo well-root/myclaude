@@ -30,7 +30,7 @@ class EventWriter(BaseModel):
 
     #把事务序列化为json
     async def handle(self, event: EventBus) -> None:
-        if self._file is not None:
+        if self._file is  None:
             return
         try:
             self._file.write(event.model_dump_json()+"\n")

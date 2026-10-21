@@ -52,7 +52,7 @@ class ToolCallFinishedEvent(BaseModel):
     tool_use_id:str
     tool_name:str
     reason:str | None=None
-    elapase_ma:int
+    elapsed_ms:int
     #elapase:时间的花费长度
     ts:str
 
@@ -63,7 +63,7 @@ class ToolCallFailedEvent(BaseModel):
     tool_name:str
     error_type:str #zhe这里包括超时 调用错误 工具不存在
     error_msg:str
-    elapase_ma:int
+    elapsed_ms:int
     ts:str
 
 class LLMTokenEvent(BaseModel):

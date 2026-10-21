@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime,UTC
-from token import AWAIT
 
 from typing import cast
 from myclaude.core.bus.events import (
@@ -37,7 +36,7 @@ async def _fail(
             tool_use_id=tool_call.id,
             tool_name=tool_call.name,
             error_type=error_type,
-            error_message=error_message,
+            error_msg=error_message,
             elapsed_ms=elapsed_ms,
             ts=_now(),
         )
@@ -77,7 +76,7 @@ async def invoke_tool(
         )
 
     required:list[str]=cast(list[str],tool.input_schema.get("required",[]))
-    missing:[p for p in required if p not in tool_call.input]
+    missing=[p for p in required if p not in tool_call.input]
 
     if missing:
         return await _fail(
@@ -99,7 +98,7 @@ async def invoke_tool(
                 run_id=run_id,
                 tool_use_id=tool_call.id,
                 tool_name=tool_call.name,
-                elapase_ms=ms,
+                elapsed_ms=ms,
                 ts=_now(),
             )
         )
