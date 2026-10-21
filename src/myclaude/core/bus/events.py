@@ -20,7 +20,7 @@ class RunStartedEvent(BaseModel):
 class RunFinishedEvent(BaseModel):
     type:Literal["run.finished"]="run.finished"
     run_id:str
-    status:str#只有success and faild
+    status:Literal["success","failed"] #只有success and faild
     reason:str | None=None #结束原因
     steps:int
     ts:str
@@ -38,7 +38,7 @@ class StepFinishedEvent(BaseModel):
     ts:str
 
 class ToolCallStartedEvent(BaseModel):
-    type:Literal["tool.started"]="tool.started"
+    type:Literal["tool.call_started"]="tool.call_started"
     run_id:str
     tool_use_id:str
     tool_name:str
@@ -47,7 +47,7 @@ class ToolCallStartedEvent(BaseModel):
 
 
 class ToolCallFinishedEvent(BaseModel):
-    type:Literal["tool.finished"]="tool.finished"
+    type:Literal["tool.call_finished"]="tool.call_finished"
     run_id:str
     tool_use_id:str
     tool_name:str
@@ -57,7 +57,7 @@ class ToolCallFinishedEvent(BaseModel):
     ts:str
 
 class ToolCallFailedEvent(BaseModel):
-    type:Literal["tool.failed"]="tool.failed"
+    type:Literal["tool.call_failed"]="tool.call_failed"
     run_id:str
     tool_use_id:str
     tool_name:str

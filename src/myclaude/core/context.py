@@ -9,7 +9,7 @@ class ExecutionContext:
     goal:str
     max_steps:int
     messages:list[dict[str, Any]] = field(default_factory=list)
-    status:str = "RUNNING" # or suceess falid
+    status:str = "running" # or suceess falid
     step:int = 0
     reason:str | None = None
 #将结果作为第一条加入
@@ -50,14 +50,14 @@ class ExecutionContext:
 
     #返回true表示loop应该停止
     def is_done(self)->bool:
-        return self.status != "RUNNING"
+        return self.status != "running"
 
     #RUN
     def mark_success(self) -> None:
-        self.status = "SUCCESS"
+        self.status = "success"
 
     def mark_failure(self,reason:str) -> None:
-        self.status = "FAILURE"
+        self.status = "failed"
         self.reason=reason
 
 

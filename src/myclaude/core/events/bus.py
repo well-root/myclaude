@@ -9,7 +9,7 @@ class EventBus(BaseModel):
     def __init__(self)->None:
         self._subscribers:list[EventHandler]=[]
 
-        #注册一个事务处理的函数
+        #注册一个事务处理的函数  注册到 _subscribers 列表里的那些 handle 方法所绑定的对象
 
     def subscribe(self, handler: EventHandler) -> None:
         self._subscribers.append(handler)
