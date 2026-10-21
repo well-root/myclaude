@@ -15,11 +15,11 @@ _DEFAULT_LOG_FILE = "~/.myclaude/logs/core.log"
 _DEFAULT_LOG_FORMAT = "text"  # "text" | "json"
 _DEFAULT_CONFIG_PATH = "~/.myclaude/config.toml"
 _DEFAULT_MAX_STEP=10
-_DEFAULT_MODEL="CLAUDE-OPUS-4.7"
+_DEFAULT_MODEL="deepseek-flash"
 #定义LLM和Agent
 @dataclass
 class AgentConfig:
-    max_step: int = _DEFAULT_MAX_STEP
+    max_steps: int = _DEFAULT_MAX_STEP
 
 @dataclass
 class LlmConfig:
@@ -33,14 +33,15 @@ class LoggingConfig:
     level: str = _DEFAULT_LOG_LEVEL
     file: str = _DEFAULT_LOG_FILE
     format: str = _DEFAULT_LOG_FORMAT
-    agent: AgentConfig = field(default_factory=AgentConfig)
-    llm: LlmConfig = field(default_factory=LlmConfig)
+
 #定义myclaudeconfig
 @dataclass
 class myclaudeconfig:
     host: str = _DEFAULT_HOST
     port: int = _DEFAULT_PORT
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    agent: AgentConfig = field(default_factory=AgentConfig)
+    llm: LlmConfig = field(default_factory=LlmConfig)
 
 #默认值 → TOML → .env → 系统环境变量
 def get_config()->myclaudeconfig:
@@ -48,7 +49,7 @@ def get_config()->myclaudeconfig:
     # .env 必须在读取 MYCLAUDE_CONFIG 之前加载，以便 .env 中的 MYCLAUDE_CONFIG 能影响 TOML 路径
     load_dotenv(".env",override=False)
 
-    config_path=Path(os.environ.get("MYCLADUE_CONFIG",_DEFAULT_CONFIG_PATH)).expanduser()
+    config_path=Path(os.environ.get("MYCLAUDE_CONFIG",_DEFAULT_CONFIG_PATH)).expanduser()
     if config_path.exists():
         try:
 
@@ -64,7 +65,7 @@ def get_config()->myclaudeconfig:
 
 #解析toml文件并且写入config,若有错误推出进程
 def _apply_toml(config:myclaudeconfig,data:dict[str,Any])->None:
-    unknown=set(data.keys())-{"core","logging"}
+    unknown=set(data.keys())-{"core","logging","agent","llm"}
     if unknown:
         raise SystemExit(f"Unknown top-level config keys: {', '.join(sorted(unknown))}")
     if "core" in data:
@@ -104,6 +105,34 @@ def _apply_toml(config:myclaudeconfig,data:dict[str,Any])->None:
                 setattr(config.logging, key, val)
 
 
+    if "agent" in data:
+        agent = data["agent"]
+        if not isinstance(agent, dict):
+            raise SystemExit("Config error: [agent] must be a table")
+        unknown_agent = set(agent.keys()) - {"max_steps"}
+        if unknown_agent:
+            raise SystemExit(f"Unknown [agent] keys: {', '.join(sorted(unknown_agent))}")
+        if "max_steps" in agent:
+            val = agent["max_steps"]
+            if not isinstance(val, int) or isinstance(val, bool) or val <= 0:
+                raise SystemExit("Config error: agent.max_steps must be a positive integer")
+            config.agent.max_steps = val
+
+    if "llm" in data:
+        llm = data["llm"]
+        if not isinstance(llm, dict):
+            raise SystemExit("Config error: [llm] must be a table")
+        unknown_llm = set(llm.keys()) - {"default_model", "router"}
+        if unknown_llm:
+            raise SystemExit(f"Unknown [llm] keys: {', '.join(sorted(unknown_llm))}")
+        for key in ("default_model", "router"):
+            if key in llm:
+                val = llm[key]
+                if not isinstance(val, str):
+                    raise SystemExit(f"Config error: llm.{key} must be a string")
+                setattr(config.llm, key, val)
+
+
 #myclaude的环境变量覆盖config
 def _apply_env(config:myclaudeconfig)->None:
     host=os.environ.get("MYCLAUDE_HOST")
@@ -116,36 +145,39 @@ def _apply_env(config:myclaudeconfig)->None:
             config.port=int(port_str)
         except ValueError:
             raise SystemExit(f"Config error: MYCLAUDE_PORT must be an integer, got: {port_str!r}")
-        log_level=os.environ.get("MYCLAUDE_LOG_LEVEL")
-        if log_level is not None:
-            config.logging.level=log_level
 
-        log_file=os.environ.get("MYCLAUDE_LOG_FILE")
-        if log_file is not None:
-            config.logging.level=log_level
 
-        log_format=os.environ.get("MYCLAUDE_LOG_FORMAT")
-        if log_format is not None:
-            config.logging.level=log_level
+    log_level=os.environ.get("MYCLAUDE_LOG_LEVEL")
+    if log_level is not None:
+        config.logging.level=log_level
 
-        max_steps_str = os.environ.get("MYCLAUDE_MAX_STEPS")
-        if max_steps_str is not None:
-            try:
-                val = int(max_steps_str)
-                if val <= 0:
-                    raise SystemExit(
-                        "Config error: MYCLAUDE_MAX_STEPS must be a positive integer,"
-                        f" got: {max_steps_str!r}"
-                    )
-                config.agent.max_steps = val
-            except ValueError:
-                raise SystemExit(
-                    f"Config error: MYCLAUDE_MAX_STEPS must be an integer, got: {max_steps_str!r}"
-                )
+    log_file=os.environ.get("MYCLAUDE_LOG_FILE")
+    if log_file is not None:
+        config.logging.file=log_file
 
-        default_model = os.environ.get("MYCLAUDE_LLM_DEFAULT_MODEL")
-        if default_model is not None:
-            config.llm.default_model = default_model
+    log_format=os.environ.get("MYCLAUDE_LOG_FORMAT")
+    if log_format is not None:
+        config.logging.format=log_format
+
+    max_steps_str = os.environ.get("MYCLAUDE_MAX_STEPS")
+    if max_steps_str is not None:
+        try:
+            val = int(max_steps_str)
+        except ValueError:
+            raise SystemExit(
+                f"Config error: MYCLAUDE_MAX_STEPS must be an integer, got: {max_steps_str!r}"
+            )
+
+        if val <= 0:
+            raise SystemExit(
+                "Config error: MYCLAUDE_MAX_STEPS must be a positive integer,"
+                f" got: {max_steps_str!r}"
+            )
+        config.agent.max_steps = val
+
+    default_model = os.environ.get("MYCLAUDE_LLM_DEFAULT_MODEL")
+    if default_model is not None:
+        config.llm.default_model = default_model
 
 
 
