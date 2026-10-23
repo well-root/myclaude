@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime,UTC
 from pathlib import Path
-from runpy import run_path
+import logging
 
 from myclaude.core.bus.events import RunFinishedEvent, RunStartedEvent
 from myclaude.core.config import myclaudeconfig
@@ -16,6 +16,9 @@ from myclaude.core.loop import AgentLoop
 from myclaude.core.runs import RUN_DIR, new_run_id
 from myclaude.core.tools.builtin.read_file import ReadFileTool
 from myclaude.core.tools.registry import ToolRegistry
+
+
+logger=logging.getLogger(__name__)
 
 def _now()->str:
     return datetime.now(UTC).isoformat()
@@ -30,34 +33,34 @@ class AgentRunner:
             config:myclaudeconfig,
             # 是「分界线」：**它后面的参数只能按关键字传，不能按位置传。**
             *,
+            bus:EventBus|None=None,
             provider:LLMProvider |None = None,
             extra_handlers:list[EventHandler] |None = None,
             run_dir:Path |None = None,
     )->None:
         self.config = config
+        self.bus = bus
         self.provider = provider
-        self.extra_handlers:list[EventHandler] = extra_handlers or []
+        self.extra_handlers = extra_handlers or []
         self.run_dir = run_dir or RUN_DIR
 
     #执行一次完整的调用
-    async def run(self,goal:str)->None:
-        run_id = new_run_id()
+    async def run(self,goal:str,*,run_id:str|None=None)->None:
+        run_id =  run_id or new_run_id()
         run_path=self.run_dir / run_id
         run_path.mkdir(parents=True, exist_ok=True)
 
-        bus = EventBus()
-        for h in self.extra_handlers:
-            bus.subscribe(h)
+        # 有外部 bus 就用外部 bus（daemon 的全局 bus）；
+        # 没有就新建一个本地 bus，保持 s1 的直接调用方式不变。
+        bus = self._bus if self._bus is not None else EventBus()
+        for handler in self.extra_handlers:
+            bus.subscribe(handler)
 
-        provider = self.provider or AnthropicProvider(self.config.llm.default_model)
-        registry=ToolRegistry()
-        registry.register(ReadFileTool())
-        loop=AgentLoop(provider,registry,bus)
-
-        context=ExecutionContext(run_id=run_id,
-                                goal=goal,
-                                max_steps=self.config.agent.max_steps,
-                                )
+        context = ExecutionContext(
+            run_id=run_id,
+            goal=goal,
+            max_steps=self.config.agent.max_steps,
+        )
 
         async with EventWriter(run_path/"events.jsonl") as writer:
             writer.subscribe(bus)
@@ -65,11 +68,27 @@ class AgentRunner:
             cancelled=False
 
             try:
+                provider = self.provider or AnthropicProvider(
+                    self.config.llm.default_model
+                )
+                registry = ToolRegistry()
+                registry.register(ReadFileTool())
+                loop = AgentLoop(provider, registry, bus)
                 await loop.run(context)
+
             except asyncio.CancelledError:
                 cancelled=True
                 if not context.is_done():
                     context.mark_failure("canceled")
+
+
+            except Exception:
+                logger.exception(
+                    "agent run failed run_id=%s step=%d",
+                    run_id, context.step,
+                )
+                if not context.is_done():
+                    context.mark_failure("llm_error")
 
             await bus.publish(
                 RunFinishedEvent(
