@@ -20,7 +20,7 @@ from myclaude.core.config import myclaudeconfig
 from myclaude.core.runner import AgentRunner
 
 
-class StdouPrinter:
+class StdoutPrinter:
     #把事务进程打印到终端
     def __init__(self)->None:
         #当前输出是否处在行内模式
@@ -74,7 +74,7 @@ class StdouPrinter:
 
 #执行命令
 def cmd_run(goal:str,config:myclaudeconfig)->None:
-    printer = StdouPrinter()
+    printer = StdoutPrinter()
     runner = AgentRunner(config,extra_handlers=[printer.handle])
     try:
         asyncio.run(runner.run(goal))
