@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 from typing import Any
 import json
 import asyncio
 import logging
+from contextvars import ContextVar
 #ValidationError 是 pydantic-core 在验证失败时引发的异常，它包含一个错误列表，详细说明了验证失败的原
 from pydantic import BaseModel,ValidationError
 from  collections.abc import Awaitable,Callable
@@ -17,22 +19,30 @@ from myclaude.core.bus.envelope import (
     JsonRpcSuccess,
     make_error,
 )
-
+from myclaude.core.transport.ipc_broadcaster import IpcEventBroadcaster
 logger = logging.getLogger(__name__)
+
+
 
 #type 在这里不是数据类型结构，是给类型起外号
 type CommandHandler=Callable[[dict[str, Any]], Awaitable [Any]]
 
 _MAX_LINE_BYTES = 1 * 1024 * 1024  # 1 MB per frame
+writer_var: ContextVar[asyncio.StreamWriter] = ContextVar("writer_var")
+
+def get_connection_writer() -> asyncio.StreamWriter:
+    return writer_var.get()
 
 #定义网络层的内容
 class SocketServer:
-    def __init__(self,host:str,port:int)->None:
+    def __init__(self,host:str,port:int,broadcaster:IpcEventBroadcaster | None=None)->None:
         self.host = host
         self.port = port
         self._handlers:dict[str,CommandHandler]={}
         self._server: asyncio.AbstractServer | None = None
-
+        self.broadcaster = broadcaster
+        self.active_writers:set[asyncio.StreamWriter] = set()
+        self.task:set[asyncio.Task[None]] = set()
     #注册一个方法名的命令来处理函数
     def register(self,method:str,handler:CommandHandler)->None:
         self._handlers[method]=handler
@@ -60,6 +70,14 @@ class SocketServer:
     async def stop(self) -> None:
         if self._server is None:
             return
+
+        for writer in list(self.active_writers):
+            try:
+                writer.close()
+            except Exception:
+                pass
+
+
         self._server.close()
         try:
             await asyncio.wait_for(self._server.wait_closed(), timeout=2.0)
@@ -70,37 +88,51 @@ class SocketServer:
     async def _handle_connection(self,reader: asyncio.StreamReader, writer: asyncio.StreamWriter)->None:
         peer=writer.get_extra_info("peername","<unknown>")
         logger.debug(f"client connected {peer}")
+        self.active_writers.add(writer)
 
         try:
             await self._read_loop(reader,writer)
 
             #最后都要关闭
         finally:
-            writer.close()
+            self.active_writers.discard(writer)
 
+            if self.broadcaster is not None:
+                self.broadcaster.unsubscribe(writer)
+            writer.close()
             try:
                 await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
 
             except TimeoutError:
                 pass
-            logger.debug(f"client disconnected {peer}")
-
+            logger.debug("client disconnected: %s", peer)
 
     #持续读取换行分割的json并进行分发处理
     async def _read_loop(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         while True:
             try:
                 line = await reader.readline()
-            except ValueError:
-                await self._send(writer, make_error(None, INVALID_REQUEST, "Request too large"))
+            except (ConnectionResetError, OSError):
+                return
+            except (asyncio.LimitOverrunError, ValueError):
+                await self._send(
+                    writer,
+                    make_error(
+                        None, INVALID_REQUEST, "Request too large"
+                    ),
+                )
                 return
 
             if not line:
                 return
-            await self._handle_line(line, reader, writer)
+
+                # 每条命令独立成 task，避免某个慢 handler 阻塞读循环
+            task = asyncio.create_task(self._handle_line(line, writer))
+            self.task.add(task)
+            task.add_done_callback(self.task.discard)
 
 #解析单行的json-rpc并返回对于的handler将结果返回客户端
-    async def _handle_line(self,line,reader: asyncio.StreamReader, writer: asyncio.StreamWriter)->None:
+    async def _handle_line(self,line:bytes, writer: asyncio.StreamWriter)->None:
         try:
             raw:Any=json.loads(line)
         except json.JSONDecodeError as e:
@@ -123,6 +155,9 @@ class SocketServer:
             )
             return
 
+        #吧当前writer放入 contextvar
+        writer_var.set(writer)
+
         try:
             result = await handler(req.params)
         except ValidationError as e:
@@ -138,7 +173,15 @@ class SocketServer:
             return
 
         result_data: Any = result.model_dump() if isinstance(result, BaseModel) else result
-        await self._send(writer, JsonRpcSuccess(id=req.id, result=result_data))
+
+        try:
+            await self._send(writer, JsonRpcSuccess(id=req.id, result=result_data))
+
+        except (ConnectionResetError,BrokenPipeError,OSError):
+            logger.debug("client disconnected before response for %s", req.method)
+
+
+
 
         # 将 pydantic 消息序列化为 JSON 行并写入流，随后刷新缓冲区
 
