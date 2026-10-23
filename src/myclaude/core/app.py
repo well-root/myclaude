@@ -8,30 +8,144 @@ import logging
 import signal
 from typing import Any
 import sys
+import fnmatch
+
 
 import myclaude
-from myclaude.core.bus.commands import PongResult
-from myclaude.core.config import get_config
+from myclaude.core.bus.commands import (
+    AgentRunCommand,
+    AgentRunResult,
+    EventSubscriberResult,
+    EventSubscriberCommand,
+    PongResult,
+)
+from myclaude.core.bus.envelope import EventPushEnvelope
+from myclaude.core.config import get_config, myclaudeconfig
+from myclaude.core.events.bus import EventBus
 from myclaude.core.logging_setup import setup_logging
-from myclaude.core.transport.socket_server import SocketServer
-
+from myclaude.core.runner import AgentRunner
+from myclaude.core.runs import events_file, new_run_id
+from myclaude.core.transport.ipc_broadcaster import IpcEventBroadcaster
+from myclaude.core.transport.socket_server import (
+    SocketServer,
+    get_connection_writer,
+)
 
 logger=logging.getLogger(__name__)
 
 
 class coreAPP:
-    #处理core.ping请求 然后返回服务的版本 运行市场和接收时间
-    async def _handle_line(self,params:dict[str,Any])->PongResult:
+    def __init__(self) -> None:
+        self.start_time=time.monotonic()
+        self.bus = EventBus()
+        self.broadcaster=IpcEventBroadcaster()
+        #成为订阅者
+        self.bus.subscribe(self.broadcaster.handle)
+        self.current_run_task:asyncio.Task[None]| None=None
+        self.config:myclaudeconfig|None=None
 
-        client = params.get("client", "unknown")
+    #处理core.ping返回版本
+    async def ping_handler(self,params:dict[str, Any]) -> PongResult:
+        client=params.get("client","unknown")
         logger.debug("ping from %s", client)
         return PongResult(
             server_version=myclaude.__version__,
-            uptime_ms=int((time.monotonic() - self._start_time) * 1000),
-            received_at=datetime.datetime.now(datetime.UTC).isoformat(),
+            uptime_ms=int(
+                (time.monotonic() - self._start_time) * 1000
+            ),
+            received_at=datetime.datetime.now(
+                datetime.UTC
+            ).isoformat(),
         )
 
+    #处理core.ping请求 然后返回服务的版本 运行市场和接收时间
+    async def _handle_line(self,params:dict[str,Any])->PongResult:
+        return await self.ping_handler(params)
 
+    async def agent_run_handler(self,params:dict[str,Any])->AgentRunResult:
+        assert self.config is not None
+
+        cmd=AgentRunCommand.model_validate(params)
+        if (
+                self.current_run_task is not None
+                and not self.current_run_task.done()
+        ):
+            raise RuntimeError("a run is already in progress")
+
+        run_id=new_run_id()
+        runner=AgentRunner(self.config,bus=self.bus)
+        task=asyncio.create_task(runner.run(cmd.goal,run_id=run_id))
+
+        self.current_run_task = task
+        task.add_done_callback(self.on_run_done)
+        return AgentRunResult(run_id=run_id)
+
+
+    #记录异常
+    def on_run_done(self,task:asyncio.Task[None])->None:
+        if task.cancelled():
+            logger.info("run task cancelled")
+            return
+        exc=task.exception()
+        if exc is not None:
+            logger.error("run task failed: %s", exc,exc_info=exc)
+
+    #注册客户端 回访接受
+    async def subscribe_handler(self,params:dict[str,Any])->EventSubscriberResult:
+        cmd=EventSubscriberCommand.model_validate(params)
+        writer=get_connection_writer()
+
+        replayed_count=0
+        if cmd.replay_from_run is not None:
+            replayed_count = await self.replay_events(
+                cmd.replay_from_run, writer, cmd.topics
+            )
+
+            sub_id = self.broadcaster.subscribe(
+                writer, cmd.topics, cmd.scope
+            )
+            return EventSubscriberResult(
+                subscriber_id=sub_id,
+                replayed_count=replayed_count,
+            )
+
+    #从event放回topic匹配
+    async def replay_events(self,
+                            run_id:str,
+                            writer:asyncio.StreamWriter,
+                            topics:list[str],
+                            )->int:
+        path=events_file(run_id)
+        if not path.exists():
+            return 0
+        count = 0
+        for line in path.read_text(
+                encoding="utf-8"
+        ).splitlines():
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            event_type: str = event.get("type", "")
+            if not any(
+                    fnmatch.fnmatch(event_type, p) for p in topics
+            ):
+                continue
+
+            envelope = EventPushEnvelope(event=event)
+            writer.write(
+                envelope.model_dump_json().encode() + b"\n"
+            )
+            count += 1
+
+        if count:
+            await writer.drain()
+        return count
+
+#未定义 每天继续
     async def run(self)->None:
         self._start_time=time.monotonic()
         config = get_config()
