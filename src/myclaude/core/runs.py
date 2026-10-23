@@ -14,8 +14,12 @@ RUN_DIR=Path("runs")
 def run_dir(run_id:str) -> Path:
     return RUN_DIR / run_id
 #指定run_id的事件日志路径
-def envent_file(run_id:str) -> Path:
-    return run_dir(run_id) / "envent.json"
+def events_file(run_id:str) -> Path:
+    return run_dir(run_id) / "events.jsonl"
+
+def event_file(run_id:str) -> Path:
+    """内部统一events_file"""
+    return events_file(run_id)
 
 #生成唯一的run id
 def new_run_id() -> str:
