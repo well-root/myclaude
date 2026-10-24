@@ -51,7 +51,7 @@ class coreAPP:
         return PongResult(
             server_version=myclaude.__version__,
             uptime_ms=int(
-                (time.monotonic() - self._start_time) * 1000
+                (time.monotonic() - self.start_time) * 1000
             ),
             received_at=datetime.datetime.now(
                 datetime.UTC
@@ -101,13 +101,13 @@ class coreAPP:
                 cmd.replay_from_run, writer, cmd.topics
             )
 
-            sub_id = self.broadcaster.subscribe(
-                writer, cmd.topics, cmd.scope
+        sub_id = self.broadcaster.subscribe(
+            writer, cmd.topics, cmd.scope
             )
-            return EventSubscriberResult(
-                subscriber_id=sub_id,
-                replayed_count=replayed_count,
-            )
+        return EventSubscriberResult(
+            subscriber_id=sub_id,
+            replayed_count=replayed_count,
+        )
 
     #从event放回topic匹配
     async def replay_events(self,
@@ -145,18 +145,18 @@ class coreAPP:
             await writer.drain()
         return count
 
-#未定义 每天继续
     async def run(self)->None:
-        self._start_time=time.monotonic()
-        config = get_config()
-        setup_logging(config)
+        self.start_time=time.monotonic()
+        self.config = get_config()
+        setup_logging(self.config)
 
-        server = SocketServer(config.host, config.port)
+        server = SocketServer(self.config.host, self.config.port,self.broadcaster)
         server.register("core.ping", self._handle_line)
-
+        server.register("agent.run", self.agent_run_handler)
+        server.register("event.subscribe", self.subscribe_handler)
         addr=await server.start()
         logger.info("myclaude-core %s listening addr=%s", myclaude.__version__, addr)
-        logger.info("config: %s", config)
+        logger.info("config: %s", self.config)
 
         loop = asyncio.get_running_loop()
         shutdown = asyncio.Event()
@@ -177,6 +177,16 @@ class coreAPP:
         await shutdown.wait()
 
         logger.info("shutting down")
+        if (
+            self.current_run_task is not None
+            and not self.current_run_task.done()
+        ):
+            self.current_run_task.cancel()
+            try:
+                await self.current_run_task
+            except asyncio.CancelledError:
+                pass
+
         await server.stop()
 
     #启动coreapp
