@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 
 
@@ -11,6 +10,11 @@ from myclaude.core.config import get_config
 from myclaude.core.logging_setup import setup_logging
 from myclaude.cli.commands.run import cmd_run
 #cli的主入口：解析命令并且发放到子任务
+from myclaude.cli.commands.core import (
+    cmd_core_start,
+    cmd_core_status,
+    cmd_core_stop,
+)
 
 def main()->None:
     #用于将命令行字符串解析为 Python 对象的对象(ArgumentParser)
@@ -21,7 +25,15 @@ def main()->None:
 
     run_parser = subparsers.add_parser("run", help="Run an agent task")
     run_parser.add_argument("--goal", required=True, help="Goal for the agent to accomplish")
+
+    core_parser = subparsers.add_parser("core", help="Manage the core daemon")
+    core_sub = core_parser.add_subparsers(dest="core_command")
+    core_sub.add_parser("start", help="Start the daemon")
+    core_sub.add_parser("status", help="Show daemon status")
+    core_sub.add_parser("stop", help="Stop the daemon")
+
     args = parser.parse_args()
+
 
     if args.version:
         cmd_version()
@@ -35,6 +47,17 @@ def main()->None:
 
     elif args.command=="run":
         cmd_run(args.goal,config)
+
+    elif args.command == "core":
+        if args.core_command == "start":
+            cmd_core_start(config)
+        elif args.core_command == "status":
+            cmd_core_status(config)
+        elif args.core_command == "stop":
+            cmd_core_stop(config)
+        else:
+            core_parser.print_help()
+            sys.exit(1)
 
     else:
         parser.print_help()
