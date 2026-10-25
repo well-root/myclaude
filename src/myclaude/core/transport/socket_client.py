@@ -86,12 +86,13 @@ class SocketClient:
                     break
                 await self._dispatch(line)
 
+
         finally:
-            #wu无论如何最后断开
-            for fut in self._pending.values():
+            pending = list(self._pending.values())
+            self._pending.clear()
+            for fut in pending:
                 if not fut.done():
                     fut.cancel()
-                self._pending.clear()
 
     #解析单行
     async def _dispatch(self, line: bytes) -> None:

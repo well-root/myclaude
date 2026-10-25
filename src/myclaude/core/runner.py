@@ -52,7 +52,7 @@ class AgentRunner:
 
         # 有外部 bus 就用外部 bus（daemon 的全局 bus）；
         # 没有就新建一个本地 bus，保持 s1 的直接调用方式不变。
-        bus = self._bus if self._bus is not None else EventBus()
+        bus = self.bus if self.bus is not None else EventBus()
         for handler in self.extra_handlers:
             bus.subscribe(handler)
 
