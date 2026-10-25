@@ -31,7 +31,7 @@ class EventClient:
         replay_from_run: str | None = None,
     ) -> dict:
         params: dict = {
-            "topics": topics,
+            "topic": topics,
             "scope": "global",
         }
         if replay_from_run is not None:

@@ -3,47 +3,49 @@ from __future__ import annotations
 import asyncio
 
 from myclaude.cli.commands.run import StdoutPrinter
+from myclaude.core.bus.events import (
+    LLMTokenEvent,
+    RunFinishedEvent,
+    RunStartedEvent,
+    StepFinishedEvent,
+    StepStartedEvent,
+    ToolCallFailedEvent,
+    ToolCallFinishedEvent,
+    ToolCallStartedEvent,
+)
+
+TS = "2026-10-25T00:00:00+00:00"
 
 
 def test_run_lifecycle(capsys) -> None:
     printer = StdoutPrinter()
 
     async def run() -> None:
+        await printer.handle(RunStartedEvent(run_id="r1", goal="g", ts=TS))
+        await printer.handle(StepStartedEvent(run_id="r1", step=1, ts=TS))
+        await printer.handle(LLMTokenEvent(run_id="r1", token="hello", ts=TS))
+        await printer.handle(LLMTokenEvent(run_id="r1", token=" world", ts=TS))
+        await printer.handle(StepFinishedEvent(run_id="r1", step=1, ts=TS))
         await printer.handle(
-            {"type": "run.started", "run_id": "r1"}
+            ToolCallStartedEvent(
+                run_id="r1",
+                tool_use_id="t1",
+                tool_name="read_file",
+                params={"path": "README.md"},
+                ts=TS,
+            )
         )
         await printer.handle(
-            {"type": "step.started", "step": 1}
+            ToolCallFinishedEvent(
+                run_id="r1",
+                tool_use_id="t1",
+                tool_name="read_file",
+                elapsed_ms=3,
+                ts=TS,
+            )
         )
         await printer.handle(
-            {"type": "llm.token", "token": "hello"}
-        )
-        await printer.handle(
-            {"type": "llm.token", "token": " world"}
-        )
-        await printer.handle(
-            {"type": "step.finished", "step": 1}
-        )
-        await printer.handle(
-            {
-                "type": "tool.call_started",
-                "tool_name": "read_file",
-                "params": {"path": "README.md"},
-            }
-        )
-        await printer.handle(
-            {
-                "type": "tool.call_finished",
-                "tool_name": "read_file",
-                "elapsed_ms": 3,
-            }
-        )
-        await printer.handle(
-            {
-                "type": "run.finished",
-                "status": "success",
-                "steps": 1,
-            }
+            RunFinishedEvent(run_id="r1", status="success", steps=1, ts=TS)
         )
 
     asyncio.run(run())
@@ -61,11 +63,15 @@ def test_tool_failure_uses_error_msg(capsys) -> None:
 
     asyncio.run(
         printer.handle(
-            {
-                "type": "tool.call_failed",
-                "tool_name": "read_file",
-                "error_msg": "permission denied",
-            }
+            ToolCallFailedEvent(
+                run_id="r1",
+                tool_use_id="t1",
+                tool_name="read_file",
+                error_type="permission",
+                error_msg="permission denied",
+                elapsed_ms=1,
+                ts=TS,
+            )
         )
     )
 
