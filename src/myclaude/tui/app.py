@@ -56,7 +56,7 @@ class MyClaudeTuiApp(App[None]):
         t=event.get("type","")
 
         if t == "llm.token":
-            self.token_buf+=event.get("text","")
+            self.token_buf+=event.get("token","")
             return
         #换
         self.flush_token(log)
@@ -146,9 +146,6 @@ class MyClaudeTuiApp(App[None]):
             status.update(
                 f"● connected  {self.host}:{self.port}"
             )
-            loop_task = asyncio.create_task(
-                client.run_event_loop()
-            )
 
             async def on_event(event:dict[str, Any])->None:
                 try:
@@ -161,41 +158,42 @@ class MyClaudeTuiApp(App[None]):
                         f"{event.get('type')}[/red]"
                     )
 
-                client.on_event(on_event)
+            client.on_event(on_event)
+            loop_task = asyncio.create_task(client.run_event_loop())
 
 
-                try:
-                    params: dict[str, Any] = {
-                        "topics": [
-                            "run.*",
-                            "step.*",
-                            "tool.*",
-                            "llm.token",
-                            "llm.user",
-                            "log.*",
-                        ],
-                        "scope": "global",
-                    }
+            try:
+                params: dict[str, Any] = {
+                    "topic": [
+                        "run.*",
+                        "step.*",
+                        "tool.*",
+                        "llm.token",
+                        "llm.user",
+                        "log.*",
+                    ],
+                    "scope": "global",
+                }
 
-                    if self.replay_run_id is not None:
-                        params["replay_run_id"] = (self.replay_run_id)
+                if self.replay_run_id is not None:
+                    params["replay_from_run"] = (self.replay_run_id)
 
-                    await  client.send_command(
-                        "event.subscribe",params
-                    )
-                    await loop_task
-
-                except(IpcError,OSError)as e:
-                    status.update(f"● disconnected — {e}")
-
-                finally:
-                    if not loop_task.done():
-                        loop_task.cancel()
-                    self.flush_token(log)
-                    await client.close()
-
-                status.update(
-                    "● disconnected — retrying in 2s"
+                await  client.send_command(
+                    "event.subscribe",params
                 )
-                await asyncio.sleep(2)
+                await loop_task
+
+            except(IpcError,OSError)as e:
+                status.update(f"● disconnected — {e}")
+
+            finally:
+                if not loop_task.done():
+                    loop_task.cancel()
+                self.flush_token(log)
+                await client.close()
+
+            status.update(
+                "● disconnected — retrying in 2s"
+            )
+            await asyncio.sleep(2)
 

@@ -22,7 +22,7 @@ class AgentRunResult(BaseModel):
     run_id:str
 
 class EventSubscriberCommand(BaseModel):
-    type:Literal["event.subscriber"]="event.subscriber"
+    type:Literal["event.subscribe"]="event.subscribe"
     topic:list[str] #定义得如["step.*"]模式
     scope:str="global"
     replay_from_run:str | None=None

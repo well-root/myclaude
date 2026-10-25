@@ -98,11 +98,11 @@ class coreAPP:
         replayed_count=0
         if cmd.replay_from_run is not None:
             replayed_count = await self.replay_events(
-                cmd.replay_from_run, writer, cmd.topics
+                cmd.replay_from_run, writer, cmd.topic
             )
 
         sub_id = self.broadcaster.subscribe(
-            writer, cmd.topics, cmd.scope
+            writer, cmd.topic, cmd.scope
             )
         return EventSubscriberResult(
             subscriber_id=sub_id,
