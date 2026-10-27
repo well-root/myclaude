@@ -7,7 +7,7 @@ import tomllib
 from dataclasses import dataclass,field
 from typing import Any
 
-
+_DEFAULT_TRACE_FILE = "~/.myclaude/traces/daemon.jsonl"
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 7437
 _DEFAULT_LOG_LEVEL = "INFO"
@@ -26,6 +26,12 @@ class LlmConfig:
     default_model: str = _DEFAULT_MODEL
     router: str = "static"  # "static" | "rule_based" (S4) | "cost_budget" (S6)
 
+@dataclass
+class TraceConfig:
+    trace_file: str = _DEFAULT_TRACE_FILE
+    enabled:bool=True
+    include_llm_payload:bool=True
+
 
 #定义loggingconfig
 @dataclass
@@ -42,6 +48,7 @@ class myclaudeconfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)
+    trace:TraceConfig=field(default_factory=TraceConfig)
 
 #默认值 → TOML → .env → 系统环境变量
 def get_config()->myclaudeconfig:
@@ -65,7 +72,7 @@ def get_config()->myclaudeconfig:
 
 #解析toml文件并且写入config,若有错误推出进程
 def _apply_toml(config:myclaudeconfig,data:dict[str,Any])->None:
-    unknown=set(data.keys())-{"core","logging","agent","llm"}
+    unknown=set(data.keys())-{"core","logging","agent","llm","trace"}
     if unknown:
         raise SystemExit(f"Unknown top-level config keys: {', '.join(sorted(unknown))}")
     if "core" in data:
@@ -131,6 +138,45 @@ def _apply_toml(config:myclaudeconfig,data:dict[str,Any])->None:
                 if not isinstance(val, str):
                     raise SystemExit(f"Config error: llm.{key} must be a string")
                 setattr(config.llm, key, val)
+
+
+    if "trace" in data:
+        trace = data["trace"]
+        if not isinstance(trace, dict):
+            raise SystemExit("Config error: [trace] must be a table")
+        unknown_trace = set(trace.keys()) - {
+            "enabled", "file", "include_llm_payload"
+        }
+        if unknown_trace:
+            raise SystemExit(
+                "Unknown [trace] keys: "
+                + ", ".join(sorted(unknown_trace))
+            )
+
+        if "enabled" in trace:
+            val = trace["enabled"]
+            if not isinstance(val, bool):
+                raise SystemExit(
+                    "Config error: trace.enabled must be a boolean"
+                )
+            config.trace.enabled = val
+
+        if "file" in trace:
+            val = trace["file"]
+            if not isinstance(val, str):
+                raise SystemExit(
+                    "Config error: trace.file must be a string"
+                )
+            config.trace.file = val
+
+        if "include_llm_payload" in trace:
+            val = trace["include_llm_payload"]
+            if not isinstance(val, bool):
+                raise SystemExit(
+                    "Config error: trace.include_llm_payload "
+                    "must be a boolean"
+                )
+            config.trace.include_llm_payload = val
 
 
 #myclaude的环境变量覆盖config
