@@ -16,7 +16,7 @@ from myclaude.core.llm.types import ToolCallBlock
 from myclaude.core.tools.base import ToolResult
 from myclaude.core.tools.registry import ToolRegistry
 
-_DEFAULT_TIMEOUT: float = 10.0
+_DEFAULT_TIMEOUT: float = 120.0
 
 def _now()->str:
     return datetime.now(UTC).isoformat()
@@ -99,6 +99,7 @@ async def invoke_tool(
                 tool_use_id=tool_call.id,
                 tool_name=tool_call.name,
                 elapsed_ms=ms,
+                output=result.content,
                 ts=_now(),
             )
         )

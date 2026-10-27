@@ -12,6 +12,8 @@ class ExecutionContext:
     status:str = "running" # or suceess falid
     step:int = 0
     reason:str | None = None
+    result:str=""
+
 #将结果作为第一条加入
     def __post_init__(self)->None:
         if not self.messages:

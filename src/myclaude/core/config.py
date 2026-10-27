@@ -178,6 +178,20 @@ def _apply_toml(config:myclaudeconfig,data:dict[str,Any])->None:
                 )
             config.trace.include_llm_payload = val
 
+#布尔解析器
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise SystemExit(
+        f"Config error: {name} must be a boolean, got: {raw!r}"
+    )
+
 
 #myclaude的环境变量覆盖config
 def _apply_env(config:myclaudeconfig)->None:
@@ -225,6 +239,22 @@ def _apply_env(config:myclaudeconfig)->None:
     if default_model is not None:
         config.llm.default_model = default_model
 
+
+
+
+
+    config.trace.enabled = _env_bool(
+        "MYCLAUDE_TRACE_ENABLED", config.trace.enabled
+    )
+
+    trace_file = os.environ.get("MYCLAUDE_TRACE_FILE")
+    if trace_file is not None:
+        config.trace.file = trace_file
+
+    config.trace.include_llm_payload = _env_bool(
+        "MYCLAUDE_TRACE_INCLUDE_LLM_PAYLOAD",
+        config.trace.include_llm_payload,
+    )
 
 
 

@@ -53,6 +53,7 @@ class ToolCallFinishedEvent(BaseModel):
     tool_name:str
     reason:str | None=None
     elapsed_ms:int
+    output:str=""
     #elapase:时间的花费长度
     ts:str
 

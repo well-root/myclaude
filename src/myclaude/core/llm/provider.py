@@ -40,6 +40,8 @@ class AnthropicProvider:
             tool_schemas:list[dict[str, object]],
             bus:EventBus,
             run_id:str,
+            *,
+            step:int=0,#仅为了满足规范 这里根本不会使用
     )->LLMResponse:
         await bus.publish(
             LLMModelSelectedEvent(run_id=run_id,model=self._model,strategy="static",ts=_now()),
