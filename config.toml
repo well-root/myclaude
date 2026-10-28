@@ -1,5 +1,0 @@
-[trace]
-enabled = true
-file = "~/.myclaude/traces/daemon.jsonl"
-include_llm_payload = true
-
