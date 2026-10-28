@@ -8,17 +8,19 @@ from contextvars import ContextVar
 #ValidationError 是 pydantic-core 在验证失败时引发的异常，它包含一个错误列表，详细说明了验证失败的原
 from pydantic import BaseModel,ValidationError
 from  collections.abc import Awaitable,Callable
-
+import datetime
 from myclaude.core.bus.envelope import (
     INTERNAL_ERROR,
     INVALID_PARAMS,
     INVALID_REQUEST,
     METHOD_NOT_FOUND,
     PARSE_ERROR,
+    JsonRpcError,
     JsonRpcRequest,
     JsonRpcSuccess,
     make_error,
 )
+from myclaude.core.trace import TraceWriter, TraceRecord
 from myclaude.core.transport.ipc_broadcaster import IpcEventBroadcaster
 logger = logging.getLogger(__name__)
 
@@ -30,12 +32,16 @@ type CommandHandler=Callable[[dict[str, Any]], Awaitable [Any]]
 _MAX_LINE_BYTES = 1 * 1024 * 1024  # 1 MB per frame
 writer_var: ContextVar[asyncio.StreamWriter] = ContextVar("writer_var")
 
+def _now()->str:
+    return datetime.datetime.now(datetime.UTC).isoformat()
+
+
 def get_connection_writer() -> asyncio.StreamWriter:
     return writer_var.get()
 
 #定义网络层的内容
 class SocketServer:
-    def __init__(self,host:str,port:int,broadcaster:IpcEventBroadcaster | None=None)->None:
+    def __init__(self,host:str,port:int,broadcaster:IpcEventBroadcaster | None=None,*,trace:TraceWriter|None=None)->None:
         self.host = host
         self.port = port
         self._handlers:dict[str,CommandHandler]={}
@@ -43,6 +49,7 @@ class SocketServer:
         self.broadcaster = broadcaster
         self.active_writers:set[asyncio.StreamWriter] = set()
         self.task:set[asyncio.Task[None]] = set()
+        self.trace=trace
     #注册一个方法名的命令来处理函数
     def register(self,method:str,handler:CommandHandler)->None:
         self._handlers[method]=handler
@@ -146,7 +153,24 @@ class SocketServer:
             #格式错误
             await self._send(writer, make_error(None, INVALID_REQUEST, "Invalid Request", str(e)))
             return
-
+        #记录合法的请求
+        if self.trace is not None:
+            self.trace.emit(TraceRecord(
+                ts=_now(),
+                direction="CLIENT→CORE",
+                layer="ipc",
+                kind="command",
+                client_id=str(
+                    writer.get_extra_info(
+                        "peername", "<unknown>"
+                )
+                ),
+                data={
+                    "id":req.id,
+                    "method":req.method,
+                    "params":req.params,
+                },
+            ))
         handler = self._handlers.get(req.method)
         if handler is None:
             await self._send(
@@ -186,8 +210,41 @@ class SocketServer:
         # 将 pydantic 消息序列化为 JSON 行并写入流，随后刷新缓冲区
 
     async def _send(self, writer: asyncio.StreamWriter, msg: BaseModel) -> None:
-        writer.write(msg.model_dump_json().encode() + b"\n")
+        writer.write(msg.model_dump_json().encode()+b"\n")
         await writer.drain()
+
+    #这里成功说明客户端收到
+        if self.trace is not None:
+            payload = msg.model_dump()
+            result=payload.get("result")
+            run_id=(
+                result.get("run_id")
+                if isinstance(result,dict)
+                else None
+            )
+            kind=(
+                "error"
+                if isinstance(msg,JsonRpcError)
+                else "response"
+            )
+
+            self.trace.emit(
+                TraceRecord(
+                    ts=_now(),
+                    direction="CORE→CLIENT",
+                    layer="ipc",
+                    kind=kind,
+                    run_id=run_id,
+                    client_id=str(
+                        writer.get_extra_info(
+                            "peername", "<unknown>"
+                        )
+                    ),
+                    data=payload,
+
+                )
+            )
+
 
 
 

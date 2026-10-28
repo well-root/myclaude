@@ -7,6 +7,13 @@ from dataclasses import dataclass
 from pydantic import BaseModel
 #吧所有的订阅都遍历 然后按照过滤后的消息 推送
 from myclaude.core.bus.envelope import EventPushEnvelope
+import datetime
+from myclaude.core.trace.record import TraceRecord
+from myclaude.core.trace.writer import TraceWriter
+
+def _now()->str:
+    return datetime.datetime.now(datetime.UTC).isoformat()
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -18,8 +25,9 @@ class Subscription:
 
 
 class IpcEventBroadcaster:
-    def __init__(self)->None:
+    def __init__(self,*,trace:TraceWriter|None=None)->None:
         self.subscriptions: list[Subscription] = []
+        self.trace = trace
 
     #注册订阅返回id
     def subscribe(
@@ -44,7 +52,7 @@ class IpcEventBroadcaster:
     async def handle(self,event:BaseModel)->None:
         event_dict = event.model_dump()
         event_type:str =event_dict.get("type","")
-        run_id:str |None =event_dict.get("run_id","")
+        run_id:str |None =(event_dict.get("run_id") or None)
 
         dead:list[asyncio.StreamWriter]=[]
 
@@ -58,6 +66,29 @@ class IpcEventBroadcaster:
                 envelope = EventPushEnvelope(event=event_dict)
                 sub.writer.write(envelope.model_dump_json().encode()+ b"\n")
                 await sub.writer.drain()
+
+                # 埋点 ②：只记谁收到了什么类型
+                if self.trace is not None:
+                    self.trace.emit(
+                        TraceRecord(
+                            ts=_now(),
+                            direction="CORE→CLIENT",
+                            layer="ipc",
+                            kind="push",
+                            run_id=run_id,
+                            client_id=str(
+                                sub.writer.get_extra_info(
+                                    "peername", "<unknown>"
+                                )
+                            ),
+                            data={
+                                "sub_id": sub.sub_id,
+                                "event_type": event_type,
+                            },
+                        )
+                    )
+
+
 
             except(ConnectionResetError,BrokenPipeError,OSError):
                 logger.debug(
