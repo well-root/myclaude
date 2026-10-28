@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-
+from myclaude.cli.commands.trace import cmd_trace
 from myclaude.cli.commands.ping import cmd_ping
 from myclaude.cli.commands.version import cmd_version
 from myclaude.core.config import get_config
@@ -25,6 +25,38 @@ def main()->None:
 
     run_parser = subparsers.add_parser("run", help="Run an agent task")
     run_parser.add_argument("--goal", required=True, help="Goal for the agent to accomplish")
+
+    trace_parser = subparsers.add_parser(
+        "trace", help="Show the daemon trace timeline"
+    )
+    trace_parser.add_argument(
+        "run_id", nargs="?", default=None,
+        help="Only show records for this run_id",
+    )
+    trace_parser.add_argument(
+        "--layer", choices=["ipc", "event", "llm"],
+        help="Filter by layer",
+    )
+    trace_parser.add_argument(
+        "--direction",
+        choices=[
+            "CLIENT→CORE",
+            "CORE→CLIENT",
+            "CORE",
+            "CORE→LLM",
+            "LLM→CORE",
+        ],
+        help="Filter by direction",
+    )
+    trace_parser.add_argument(
+        "--raw", action="store_true",
+        help="Print raw NDJSON",
+    )
+    trace_parser.add_argument(
+        "--follow", "-f", action="store_true",
+        help="Follow the file like tail -f",
+    )
+
 
     core_parser = subparsers.add_parser("core", help="Manage the core daemon")
     core_sub = core_parser.add_subparsers(dest="core_command")
@@ -58,6 +90,15 @@ def main()->None:
         else:
             core_parser.print_help()
             sys.exit(1)
+    elif args.command == "trace":
+        cmd_trace(
+            args.run_id,
+            config,
+            layer=args.layer,
+            direction=args.direction,
+            raw=args.raw,
+            follow=args.follow,
+        )
 
     else:
         parser.print_help()
