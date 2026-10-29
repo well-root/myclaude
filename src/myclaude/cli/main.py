@@ -92,8 +92,8 @@ def main()->None:
             sys.exit(1)
     elif args.command == "trace":
         cmd_trace(
-            args.run_id,
             config,
+            args.run_id,
             layer=args.layer,
             direction=args.direction,
             raw=args.raw,
