@@ -30,12 +30,13 @@ class TracingProvider:
             run_id: str,
             *,
             step: int = 0,
+            system:str|None=None,
     )->LLMResponse:
         if self.include_payload:
             call_data:dict[str, Any]={
                 "messages":copy.deepcopy(messages),
                 "tool_schemas":copy.deepcopy(tool_schemas),
-
+                "system":system,
             }
         else:
             call_data={
@@ -62,6 +63,7 @@ class TracingProvider:
             bus=bus,
             run_id=run_id,
             step=step,
+            system=system,
         )
 
         latency_ms = int((time.monotonic() - t0) * 1000)

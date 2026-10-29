@@ -15,4 +15,5 @@ class LLMProvider(Protocol):
             run_id: str,
             *,
             step:int=0,
+            system:str|None=None,
                 )->LLMResponse:...

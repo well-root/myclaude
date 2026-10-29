@@ -9,13 +9,9 @@ import anthropic
 
 from myclaude.core.bus.events import LLMModelSelectedEvent,LLMTokenEvent,LLMUserEvent
 from myclaude.core.events.bus import EventBus
+from myclaude.core.context import BASE_SYSTEM_PROMPT
 from myclaude.core.llm.types import LLMResponse,ToolCallBlock,UsageStats
 
-_SYSTEM_PROMPT = (
-    "You are a helpful AI assistant. "
-    "Use the available tools to complete the user's goal. "
-    "When the goal is fully achieved, respond with a final answer and do not call any more tools."
-)
 
 def _now()->str:
     return datetime.now(UTC).isoformat()
@@ -42,15 +38,18 @@ class AnthropicProvider:
             run_id:str,
             *,
             step:int=0,#仅为了满足规范 这里根本不会使用
+            system:str|None=None,
     )->LLMResponse:
         await bus.publish(
             LLMModelSelectedEvent(run_id=run_id,model=self._model,strategy="static",ts=_now()),
 
         )
 
-        system: list[dict[str, object]] = [
-            {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
-        ]
+        system_blocks:list[dict[str, object]]=[{
+            "type":"text",
+            "text":system or BASE_SYSTEM_PROMPT,
+            "cache_control":{"type": "ephemeral"},
+        },]
 
         tools: list[dict[str, object]] = list(tool_schemas)
         if tools:

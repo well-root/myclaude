@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import  UTC,datetime
 import logging
+from myclaude.core.context import BASE_SYSTEM_PROMPT,ExecutionContext
 logger = logging.getLogger(__name__)
 import asyncio
 from myclaude.core.bus.events import StepFinishedEvent, StepStartedEvent
@@ -42,6 +43,7 @@ class AgentLoop:
                     bus=self.bus,
                     run_id=context.run_id,
                     step=context.step,
+                    system=context.system_prompt(BASE_SYSTEM_PROMPT)
                 )
 
             except asyncio.CancelledError:
