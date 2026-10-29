@@ -36,8 +36,11 @@ class BashTool(BaseTool):
     #执行shell 合并标准命令和标准错误命令，超时返回错误
     async def invoke(self,params:dict[str,object]) ->ToolResult:
         command=str(params["command"])
-        timeout = max(1,min(int(str(params["timeout"] or DEFAULT_TIMEOUT)),120,),)
-
+        try:
+            timeout = int(params.get("timeout") or DEFAULT_TIMEOUT)
+        except(TypeError,ValueError):
+            timeout = DEFAULT_TIMEOUT
+        timeout=max(1,min(timeout,120),)
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,

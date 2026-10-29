@@ -14,7 +14,7 @@ _DEFAULT_LOG_LEVEL = "INFO"
 _DEFAULT_LOG_FILE = "~/.myclaude/logs/core.log"
 _DEFAULT_LOG_FORMAT = "text"  # "text" | "json"
 _DEFAULT_CONFIG_PATH = "~/.myclaude/config.toml"
-_DEFAULT_MAX_STEP=10
+_DEFAULT_MAX_STEP=20
 _DEFAULT_MODEL="deepseek-flash"
 #定义LLM和Agent
 @dataclass
@@ -167,7 +167,7 @@ def _apply_toml(config:myclaudeconfig,data:dict[str,Any])->None:
                 raise SystemExit(
                     "Config error: trace.file must be a string"
                 )
-            config.trace.file = val
+            config.trace.trace_file = val
 
         if "include_llm_payload" in trace:
             val = trace["include_llm_payload"]
@@ -249,7 +249,7 @@ def _apply_env(config:myclaudeconfig)->None:
 
     trace_file = os.environ.get("MYCLAUDE_TRACE_FILE")
     if trace_file is not None:
-        config.trace.file = trace_file
+        config.trace.trace_file = trace_file
 
     config.trace.include_llm_payload = _env_bool(
         "MYCLAUDE_TRACE_INCLUDE_LLM_PAYLOAD",
