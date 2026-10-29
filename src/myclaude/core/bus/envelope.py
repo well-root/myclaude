@@ -36,11 +36,21 @@ class JsonRpcError(BaseModel):
     error: JsonRpcErrorObject
 
 
+class HandlerError(Exception):
+    """命令 handler 抛出此异常，SocketServer 将其转换为结构化 JSON-RPC 错误响应。"""
+
+    def __init__(self, code: int, message: str, data: Any = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.data = data
+
 PARSE_ERROR = -32700      # 解析错误
 INVALID_REQUEST = -32600  # 请求格式错误
 METHOD_NOT_FOUND = -32601 # 方法不存在
 INVALID_PARAMS = -32602   # 参数错误
 INTERNAL_ERROR = -32603   # 服务器内部错误
+
+
 
 
 #构建一个JSON-RPC错误相应的对象

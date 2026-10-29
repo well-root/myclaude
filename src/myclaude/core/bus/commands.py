@@ -1,8 +1,8 @@
 from __future__ import annotations
-from typing import Literal, Annotated
+from typing import Literal, Annotated,Any
 
 from pydantic import BaseModel, Discriminator
-
+from myclaude.core.session.model import SessionMode,SessionStatus
 
 class PingCommand(BaseModel):
     type:Literal["core.ping"]="core.ping"
@@ -31,12 +31,56 @@ class EventSubscriberResult(BaseModel):
     subscriber_id:str
     replayed_count:int=0
 
+class SessionCreateCommand(BaseModel):
+    type: Literal["session.create"] = "session.create"
+    mode: SessionMode = "chat"
+    title: str = ""
+
+
+class SessionCreateResult(BaseModel):
+    session_id: str
+    status: SessionStatus
+
+
+class SessionSendMessageCommand(BaseModel):
+    type: Literal["session.send_message"] = "session.send_message"
+    session_id: str
+    content: str
+
+
+class SessionSendMessageResult(BaseModel):
+    run_id: str
+
+
+class SessionGetHistoryCommand(BaseModel):
+    type: Literal["session.get_history"] = "session.get_history"
+    session_id: str
+
+
+class SessionGetHistoryResult(BaseModel):
+    messages: list[dict[str, Any]]
+
+
+class SessionCloseCommand(BaseModel):
+    type: Literal["session.close"] = "session.close"
+    session_id: str
+
+
+class SessionCloseResult(BaseModel):
+    status: SessionStatus
+
 
 
 
 #根据type()来决定类型的判别联合
 Command=Annotated[
-    PingCommand,
+    PingCommand
+    |AgentRunCommand
+    |EventSubscriberResult
+    |SessionCreateCommand
+    |SessionSendMessageCommand
+    |SessionGetHistoryCommand
+    |SessionCloseCommand,
     Discriminator("type"),
 ]
 

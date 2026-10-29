@@ -19,6 +19,7 @@ from myclaude.core.bus.envelope import (
     JsonRpcRequest,
     JsonRpcSuccess,
     make_error,
+    HandlerError,
 )
 from myclaude.core.trace import TraceWriter, TraceRecord
 from myclaude.core.transport.ipc_broadcaster import IpcEventBroadcaster
@@ -149,6 +150,8 @@ class SocketServer:
 
         try:
             req=JsonRpcRequest.model_validate(raw)
+
+
         except ValidationError as e:
             #格式错误
             await self._send(writer, make_error(None, INVALID_REQUEST, "Invalid Request", str(e)))
@@ -184,6 +187,10 @@ class SocketServer:
 
         try:
             result = await handler(req.params)
+        except HandlerError as e:
+            await self._send(writer, make_error(req.id, e.code, str(e), e.data))
+            return
+
         except ValidationError as e:
             await self._send(
                 writer,

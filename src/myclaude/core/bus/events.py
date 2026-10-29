@@ -20,7 +20,7 @@ class RunStartedEvent(BaseModel):
 class RunFinishedEvent(BaseModel):
     type:Literal["run.finished"]="run.finished"
     run_id:str
-    status:Literal["success","failed"] #只有success and faild
+    status:Literal["success","failed"] #只有success and faiure
     reason:str | None=None #结束原因
     steps:int
     ts:str
