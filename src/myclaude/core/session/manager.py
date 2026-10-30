@@ -56,16 +56,17 @@ class SessionManager:
             updated_at=ts,
             run_ids=[],
         )
-        self._sessions[sid] = session
+
         self._locks[sid] = asyncio.Lock()
         self._store.write_meta(session)
+        self._sessions[sid] = session
         await self._bus.publish(
             SessionCreatedEvent(session_id=sid, mode=mode, ts=ts)
         )
         return session
     #启动agent run 然后呢追加thread
     async def seed_message(self,sid:str,content:str,*,run_id:str|None=None)->str:
-        session=self._get_sessoin(sid)
+        session=self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")

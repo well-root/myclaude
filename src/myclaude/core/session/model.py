@@ -28,7 +28,7 @@ class Session:
 
     #还原成session对象给llm读取
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> session:
+    def from_dict(cls, data: dict[str, Any]) -> Session:
         return cls(
             id=str(data["id"]),
             mode=data["mode"],
