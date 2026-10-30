@@ -7,11 +7,14 @@ from typing import Any
 
 from rich.markdown import Markdown as RichMarkdown
 from rich.markup import escape
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
+from textual.css.query import NoMatches
+from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Label, Static
+from textual.widgets import Label, Static, TextArea
 
 from myclaude.core.transport.socket_client import (
     IpcError,
@@ -25,6 +28,32 @@ def _preview(s: str, n: int) -> str:
 
 def _params_str(params: dict[str, Any]) -> str:
     return json.dumps(params, ensure_ascii=False)
+
+# 从工具参数中提取最适合摘要展示的关键字段
+def _param_summary(
+    tool_name: str,
+    params: dict[str, Any],
+    max_len: int = 72,
+) -> str:
+    keys_by_tool = {
+        "read_file": ("path",),
+        "write_file": ("path",),
+        "list_dir": ("path", "max_depth"),
+        "bash": ("command",),
+        "note_save": ("content",),
+    }
+    keys = keys_by_tool.get(tool_name, ())
+    parts = [
+        f"{key}={params[key]!r}"
+        for key in keys
+        if key in params
+    ]
+    if not parts:
+        parts = [
+            f"{key}={value!r}"
+            for key, value in list(params.items())[:2]
+        ]
+    return _preview(", ".join(parts), max_len)
 
 
 class LLMStreamBlock(Static):
@@ -99,6 +128,17 @@ class ToolCallBlock(Widget):
 
     # 生成摘要行文本
     def _summary(self) -> str:
+        # note_save 成功时不展示具体内容，避免聊天区噪声
+        if (
+                self._tool_name == "note_save"
+                and self._finished
+                and not self._is_error
+        ):
+            return (
+                f"  [green]remembered[/green]  "
+                f"[dim]{self._elapsed_ms}ms[/dim]"
+            )
+
         params_pre = escape(
             _preview(self._params_full, 60)
         )
@@ -158,6 +198,55 @@ class ToolCallBlock(Widget):
             )
             self.add_class("expanded")
 
+class ChatTextArea(TextArea):
+    """Enter 提交；Shift/Alt/Ctrl+J/Cmd+Enter 换行。"""
+
+    DEFAULT_CSS = """
+    ChatTextArea {
+        height: auto;
+        min-height: 3;
+        max-height: 12;
+        border: round $surface-lighten-2;
+        background: $background;
+        padding: 0 1;
+        margin: 1 2;
+        scrollbar-size-vertical: 1;
+    }
+    ChatTextArea:focus {
+        border: round $accent;
+        background: $background;
+    }
+    """
+
+    # 子类自定义提交消息，供宿主 App 监听
+    class Submitted(Message):
+        def __init__(self, area: ChatTextArea) -> None:
+            self.text_area = area
+            self.value = area.text
+            super().__init__()
+
+    # Enter 提交；组合键插入换行；其余键交回 TextArea
+    async def _on_key(self, event: events.Key) -> None:
+        key = event.key
+        if key == "enter":
+            event.stop()
+            event.prevent_default()
+            if self.text.strip():
+                self.post_message(self.Submitted(self))
+            return
+        if key in (
+            "alt+enter",
+            "shift+enter",
+            "ctrl+j",
+            "super+enter",
+        ):
+            event.stop()
+            event.prevent_default()
+            if not self.read_only:
+                self.insert("\n")
+            return
+        await super()._on_key(event)
+
 
 class MyClaudeTuiApp(App[None]):
     """myclaude TUI：终端滚屏风格，实时展示 agent 执行过程。"""
@@ -174,7 +263,8 @@ class MyClaudeTuiApp(App[None]):
         color: $text;
         padding: 0 1;
     }
-    #log-view { height: 1fr; }
+   #log-view { height: 1fr; }
+    Static.user-turn { color: cyan; padding: 1 2 0 2; }
     Static.run-header { color: cyan; padding: 1 2 0 2; }
     Static.step-divider { color: $text-muted; padding: 0 2; }
     Static.run-ok { color: green; padding: 0 2 1 2; }
@@ -198,6 +288,8 @@ class MyClaudeTuiApp(App[None]):
         self._pending_tool_blocks: dict[
             str, ToolCallBlock
         ] = {}
+        self._session_id: str | None = None
+        self._busy = False
 
     def compose(self) -> ComposeResult:
         yield Label(
@@ -206,6 +298,9 @@ class MyClaudeTuiApp(App[None]):
             id="header",
         )
         yield VerticalScroll(id="log-view")
+        yield ChatTextArea(
+            id="prompt", show_line_numbers=False
+        )
 
     def on_mount(self) -> None:
         self.run_worker(
@@ -213,6 +308,86 @@ class MyClaudeTuiApp(App[None]):
             exclusive=True,
             name="socket",
         )
+        prompt = self._prompt()
+        if prompt is not None:
+            prompt.disabled = True
+            prompt.border_title = "connecting..."
+
+    # 退出前尽力关闭当前 session，失败也不阻塞退出
+    async def action_quit(self) -> None:
+        if (
+                self._client is not None
+                and self._session_id is not None
+        ):
+            try:
+                await self._client.send_command(
+                    "session.close",
+                    {"session_id": self._session_id},
+                )
+            except (IpcError, RuntimeError, OSError):
+                self._append(
+                    Static(
+                        "[yellow]warning: failed to close "
+                        "session[/yellow]"
+                    )
+                )
+        self.exit()
+
+    # 输入框提交：发送 session.send_message
+    async def on_chat_text_area_submitted(
+            self, event: ChatTextArea.Submitted
+    ) -> None:
+        content = event.value.strip()
+        if not content:
+            return
+        if (
+                self._client is None
+                or self._session_id is None
+                or self._busy
+        ):
+            self._append(
+                Static(
+                    "[yellow]agent busy or disconnected"
+                    "[/yellow]",
+                    classes="log-line",
+                )
+            )
+            return
+
+        self._busy = True
+        prompt = event.text_area
+        prompt.text = ""
+        prompt.disabled = True
+        prompt.border_title = "agent is working..."
+        self._append(
+            Static(
+                f"[bold]>[/bold] {escape(content)}",
+                classes="user-turn",
+            )
+        )
+        self._update_header("running")
+        try:
+            await self._client.send_command(
+                "session.send_message",
+                {
+                    "session_id": self._session_id,
+                    "content": content,
+                },
+            )
+        except IpcError as e:
+            self._busy = False
+            prompt.disabled = False
+            prompt.border_title = (
+                "type a message — enter to send"
+            )
+            self._update_header("ready")
+            self._append(
+                Static(
+                    f"[red]send error: {escape(str(e))}"
+                    "[/red]",
+                    classes="log-line",
+                )
+            )
 
     # 向日志视图追加一个 widget 并滚动到底部
     def _append(self, widget: Widget) -> None:
@@ -228,34 +403,58 @@ class MyClaudeTuiApp(App[None]):
             self._current_llm.finalize_markdown()
         self._current_llm = None
 
-    # 管理 SocketClient 生命周期：连接、订阅、断线重连
-    async def _socket_loop(self) -> None:
-        header = self.query_one("#header", Label)
+    # 安全获取输入框，组件测试未挂载时返回 None
+    def _prompt(self) -> ChatTextArea | None:
+        try:
+            return self.query_one(
+                "#prompt", ChatTextArea
+            )
+        except NoMatches:
+            return None
 
+    # 根据连接和运行状态刷新顶部标题
+    def _update_header(self, state: str) -> None:
+        try:
+            header = self.query_one("#header", Label)
+        except NoMatches:
+            return
+        session = (
+            f"  [dim]{self._session_id}[/dim]"
+            if self._session_id
+            else ""
+        )
+        color = {
+            "ready": "green",
+            "running": "yellow",
+            "disconnected": "red",
+            "connecting": "dim",
+        }.get(state, "dim")
+        header.update(
+            f"[bold]myclaude[/bold]  "
+            f"[dim]{self._host}:{self._port}[/dim]"
+            f"{session}  [{color}]{state}[/{color}]"
+        )
+
+    # 管理 SocketClient 生命周期：连接、订阅、建会话、断线重连
+    async def _socket_loop(self) -> None:
         while True:
             client = SocketClient(self._host, self._port)
             self._client = None
             try:
                 await client.connect()
             except (ConnectionRefusedError, OSError):
-                header.update(
-                    "[bold]myclaude[/bold]  "
-                    "[red]not connected — retrying...[/red]"
-                )
+                self._update_header("disconnected")
                 await asyncio.sleep(2)
                 continue
 
             self._client = client
-            header.update(
-                f"[bold]myclaude[/bold]  "
-                f"[dim]{self._host}:{self._port}[/dim]"
-            )
+            self._update_header("connecting")
             loop_task = asyncio.create_task(
                 client.run_event_loop()
             )
 
             async def on_event(
-                event: dict[str, Any],
+                    event: dict[str, Any],
             ) -> None:
                 try:
                     self._handle_event(event)
@@ -274,6 +473,7 @@ class MyClaudeTuiApp(App[None]):
             try:
                 params: dict[str, Any] = {
                     "topic": [
+                        "session.*",
                         "run.*",
                         "step.*",
                         "tool.*",
@@ -287,27 +487,55 @@ class MyClaudeTuiApp(App[None]):
                     params["replay_from_run"] = (
                         self._replay_run_id
                     )
+                # 先订阅，再创建 session
                 await client.send_command(
                     "event.subscribe", params
                 )
+                created = await client.send_command(
+                    "session.create", {"mode": "chat"}
+                )
+                self._session_id = str(
+                    created["session_id"]
+                )
+                prompt = self._prompt()
+                if prompt is not None:
+                    prompt.disabled = False
+                    prompt.border_title = (
+                        "type a message — enter to send, "
+                        "shift+enter for newline"
+                    )
+                    prompt.focus()
+                self._update_header("ready")
                 await loop_task
             except IpcError as e:
-                header.update(
-                    "[bold]myclaude[/bold]  "
-                    f"[red]subscribe error: "
-                    f"{escape(str(e))}[/red]"
+                self._update_header("disconnected")
+                self._append(
+                    Static(
+                        "[red]subscribe error: "
+                        f"{escape(str(e))}[/red]",
+                        classes="log-line",
+                    )
                 )
             finally:
                 if not loop_task.done():
                     loop_task.cancel()
+                    try:
+                        await loop_task
+                    except asyncio.CancelledError:
+                        pass
                 self._client = None
+                self._session_id = None
+                self._busy = False
+                prompt = self._prompt()
+                if prompt is not None:
+                    prompt.disabled = True
+                    prompt.border_title = (
+                        "disconnected, retrying..."
+                    )
                 self._break_llm()
                 await client.close()
 
-            header.update(
-                "[bold]myclaude[/bold]  "
-                "[dim]disconnected — retrying...[/dim]"
-            )
+            self._update_header("disconnected")
             await asyncio.sleep(2)
 
     # 根据事件 type 路由到对应渲染逻辑
@@ -325,7 +553,27 @@ class MyClaudeTuiApp(App[None]):
 
         self._break_llm()
 
-        if t == "run.started":
+        if t == "session.waiting_for_input":
+            self._busy = False
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.disabled = False
+                prompt.border_title = (
+                    "type a message — enter to send, "
+                    "shift+enter for newline"
+                )
+                prompt.focus()
+            self._update_header("ready")
+
+        elif t == "session.closed":
+            self._busy = False
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.disabled = True
+                prompt.border_title = "session closed"
+            self._update_header("disconnected")
+
+        elif t == "run.started":
             run_id = escape(str(event.get("run_id", "")))
             goal = escape(str(event.get("goal", "")))
             self._append(
@@ -473,12 +721,11 @@ class MyClaudeTuiApp(App[None]):
                 )
             )
 
-
 # TUI 入口：供 tui/__main__.py 调用
 def run(
-    host: str,
-    port: int,
-    replay_run_id: str | None = None,
+        host: str,
+        port: int,
+        replay_run_id: str | None = None,
 ) -> None:
     app = MyClaudeTuiApp(
         host, port, replay_run_id=replay_run_id
