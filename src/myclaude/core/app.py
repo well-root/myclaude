@@ -20,6 +20,14 @@ from myclaude.core.bus.commands import (
     EventSubscriberResult,
     EventSubscriberCommand,
     PongResult,
+    SessionCloseCommand,
+    SessionCloseResult,
+    SessionCreateCommand,
+    SessionCreateResult,
+    SessionGetHistoryCommand,
+    SessionGetHistoryResult,
+    SessionSendMessageCommand,
+    SessionSendMessageResult,
 )
 from myclaude.core.bus.envelope import EventPushEnvelope
 from myclaude.core.config import get_config, myclaudeconfig
@@ -28,6 +36,7 @@ from myclaude.core.logging_setup import setup_logging
 from myclaude.core.runner import AgentRunner
 
 from myclaude.core.runs import events_file, new_run_id
+from myclaude.core.session import SessionManager, SessionStore
 from myclaude.core.trace.record import TraceRecord
 from myclaude.core.trace.writer import TraceWriter
 from myclaude.core.transport.ipc_broadcaster import IpcEventBroadcaster
@@ -49,6 +58,8 @@ class coreAPP:
         self.trace:TraceWriter |None=None
         #成为订阅者
         self.running_runs:set[asyncio.Task[None]]=set()
+        self.config:myclaudeconfig|None=None
+        self.sessions:SessionManager|None=None
 
 
     #处理core.ping返回版本
@@ -90,15 +101,54 @@ class coreAPP:
         assert self.config is not None
 
         cmd=AgentRunCommand.model_validate(params)
-
+        session=await self.sessions(mode="one_shot",title=cmd.goal[:40])
         run_id=new_run_id()
-        runner=AgentRunner(self.config,bus=self.bus,trace=self.trace)
-        task=asyncio.create_task(runner.run(cmd.goal,run_id=run_id))
+        task=asyncio.create_task(self.sessions.seed_message(session.id,cmd.goal,run_id=run_id))
 
         self.running_runs.add(task)
         task.add_done_callback(self.on_run_done)
         return AgentRunResult(run_id=run_id)
 
+        # 创建 chat / one_shot session
+
+    async def session_create_handler(
+            self, params: dict[str, Any]
+    ) -> SessionCreateResult:
+        assert self.sessions is not None
+        cmd = SessionCreateCommand.model_validate(params)
+        session = await self.sessions.create(
+            mode=cmd.mode, title=cmd.title
+        )
+        return SessionCreateResult(
+            session_id=session.id, status=session.status
+        )
+
+    # 向 session 发送消息，等这一轮 run 完成才返回
+    async def session_send_handler(
+            self, params: dict[str, Any]
+    ) -> SessionSendMessageResult:
+        assert self.sessions is not None
+        cmd = SessionSendMessageCommand.model_validate(params)
+        run_id = await self.sessions.seed_message(cmd.session_id, cmd.content)
+        return SessionSendMessageResult(run_id=run_id)
+
+    # 返回 session 的完整 Anthropic messages 历史
+    async def session_history_handler(
+            self, params: dict[str, Any]
+    ) -> SessionGetHistoryResult:
+        assert self.sessions is not None
+        cmd = SessionGetHistoryCommand.model_validate(params)
+        messages = await self.sessions.get_history(cmd.session_id)
+        return SessionGetHistoryResult(messages=messages)
+
+    # 关闭 session
+    async def session_close_handler(
+            self, params: dict[str, Any]
+    ) -> SessionCloseResult:
+        assert self.sessions is not None
+        cmd = SessionCloseCommand.model_validate(params)
+        await self.sessions.close(cmd.session_id)
+        return SessionCloseResult(status="closed")
 
     #记录异常
     def on_run_done(self,task:asyncio.Task[None])->None:
@@ -117,15 +167,11 @@ class coreAPP:
 
         replayed_count=0
         if cmd.replay_from_run is not None:
-            replayed_count = await self.replay_events(
-                cmd.replay_from_run, writer, cmd.topic
-            )
+            replayed_count = await self.replay_events(cmd.replay_from_run, writer, cmd.topic)
 
         assert self.broadcaster is not None
 
-        sub_id = self.broadcaster.subscribe(
-            writer, cmd.topic, cmd.scope
-            )
+        sub_id = self.broadcaster.subscribe(writer, cmd.topic, cmd.scope)
         return EventSubscriberResult(
             subscriber_id=sub_id,
             replayed_count=replayed_count,
@@ -139,7 +185,15 @@ class coreAPP:
                             )->int:
         path=events_file(run_id)
         if not path.exists():
+            pattern = f"*/runs/{run_id}/events.jsonl"
+            for candidate in Path(
+                    "~/.myclaude/sessions"
+            ).expanduser().glob(pattern):
+                path = candidate
+                break
+        if not path.exists():
             return 0
+
         count = 0
         for line in path.read_text(
                 encoding="utf-8"
@@ -178,10 +232,33 @@ class coreAPP:
         self.broadcaster=IpcEventBroadcaster(trace=self.trace)
         self.bus.subscribe(self.broadcaster.handle)
 
-        server = SocketServer(self.config.host, self.config.port,self.broadcaster)
+        #集中会话数据 放到用户目录
+        store = SessionStore(Path("~/.myclaude/sessions").expanduser())
+        self.sessions = SessionManager(
+            store,
+            runner_factory=lambda: AgentRunner(
+                self.config,
+                bus=self.bus,
+                trace=self.trace,
+            ),
+            bus=self.bus,
+        )
+
+        server = SocketServer(self.config.host, self.config.port,self.broadcaster,trace=self.trace)
         server.register("core.ping", self._handle_line)
         server.register("agent.run", self.agent_run_handler)
+
         server.register("event.subscribe", self.subscribe_handler)
+        server.register("session.create", self.session_create_handler)
+        server.register("session.send_message", self.session_send_handler)
+        server.register(
+            "session.get_history",
+            self.session_history_handler,
+        )
+        server.register(
+            "session.close",
+            self.session_close_handler
+        )
         addr=await server.start()
         logger.info("myclaude-core %s listening addr=%s", myclaude.__version__, addr)
         logger.info("config: %s", self.config)

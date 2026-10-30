@@ -1,10 +1,12 @@
 #生成run_id 见目录 接入广播中心
 from __future__ import annotations
 import asyncio
-from datetime import datetime,UTC
-from pathlib import Path
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from pathlib import Path
+
 
 from myclaude.core.bus.events import (
     RunFinishedEvent,
@@ -18,10 +20,13 @@ from myclaude.core.llm.base import LLMProvider
 from myclaude.core.llm.provider import AnthropicProvider
 from myclaude.core.loop import AgentLoop
 from myclaude.core.runs import RUN_DIR, new_run_id
+from myclaude.core.session.model import Session
+from myclaude.core.session.store import SessionStore
 from myclaude.core.task.manager import TaskManager
 from myclaude.core.tools.builtin import (
     BashTool,
     ListDirTool,
+    NoteSaveTool,
     ReadFileTool,
     TaskCreateTool,
     TaskGetTool,
@@ -73,9 +78,23 @@ class AgentRunner:
 
 
 
-    async def run_and_capture(self,goal,*,run_id:str|None=None)->RunOutcome:
+    async def run_and_capture(self,
+                            goal,
+                            *,
+                            run_id:str|None=None,
+                            session:Session|None=None,
+                            store:SessionStore|None=None
+                            )->RunOutcome:
         run_id =  run_id or new_run_id()
-        run_path=self.run_dir / run_id
+        if session is not None and store is not None:
+
+            run_path=self.run_dir(session.id) / run_id
+            history=store.read_messages(session.id)
+            notes=store.read_notes(session.id)
+        else:
+            run_path=self.run_dir /run_id
+            history=[{"role":"user","content":goal}]
+            notes=""
         run_path.mkdir(parents=True, exist_ok=True)
 
         # 有外部 bus 就用外部 bus（daemon 的全局 bus）；
@@ -88,7 +107,12 @@ class AgentRunner:
             run_id=run_id,
             goal=goal,
             max_steps=self.config.agent.max_steps,
+            prefill_messages=history,
+            session_notes=notes,
         )
+
+        # 历史消息已经全部在 thread 里，run 结束后只追加新增部分
+        prefill_len = len(history)
 
         #每次run就保存一个独立的.tasks目录
         task_manager = TaskManager(run_path / ".tasks")
@@ -109,7 +133,12 @@ class AgentRunner:
 
 #工具调用
 
-                registry=self._build_registry(task_manager)
+                registry=self._build_registry(task_manager,
+                                            session=session,
+                                            store=store,
+                                            run_id=run_id,
+
+                                            )
                 loop = AgentLoop(provider, registry, bus)
                 await loop.run(context)
 
@@ -138,6 +167,14 @@ class AgentRunner:
                 )
             )
 
+            # 只写回本轮新增的 assistant / tool_result 消息
+            if session is not None and store is not None:
+                store.append_messages(
+                    session.id,
+                    context.messages[prefill_len:],
+                    run_id=run_id,
+                )
+
 
         if cancelled:
             raise asyncio.CancelledError()
@@ -148,7 +185,7 @@ class AgentRunner:
             reason=context.reason,
         )
     #工具和任务共享一个Taskmanager
-    def _build_registry(self, task_manager: TaskManager
+    def _build_registry(self, task_manager: TaskManager,*,session:Session|None=None,store:SessionStore|None=None,run_id:str|None=None
     ) -> ToolRegistry:
         registry = ToolRegistry()
         for tool in (
@@ -166,6 +203,14 @@ class AgentRunner:
             TaskGetTool(task_manager),
         ):
             registry.register(tool)
+
+        #同时具有session和store和run_id的才配暴露note-save
+        if(
+            session is not None and
+            store is not None and
+            run_id is not None
+        ):
+            registry.register(NoteSaveTool(store,session.id,run_id))
 
         return registry
 
