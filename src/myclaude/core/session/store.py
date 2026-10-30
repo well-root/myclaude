@@ -94,6 +94,14 @@ class SessionStore:
             )
 
         return self._trim_orphan_tool_use(messages)
+    #写入操作
+    def write_meta(self,session:Session)->None:
+        path=self.session_dir(session.id)
+        path.mkdir(parents=True, exist_ok=True)
+        (path/"meta.json").write_text(
+            json.dumps(session.to_dict(), ensure_ascii=False,indent=2),
+            encoding="utf-8",
+        )
 
     # 裁掉尾部未配对 tool_use 以及其后的消息，避免 Anthropic messages.invalid
     def _trim_orphan_tool_use(
