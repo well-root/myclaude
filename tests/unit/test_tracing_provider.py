@@ -26,6 +26,7 @@ class FakeProvider:
         run_id,
         *,
         step: int = 0,
+        system:str|None = None,
     ) -> LLMResponse:
         self.calls.append(
             {
