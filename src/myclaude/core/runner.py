@@ -87,8 +87,7 @@ class AgentRunner:
                             )->RunOutcome:
         run_id =  run_id or new_run_id()
         if session is not None and store is not None:
-
-            run_path=self.run_dir(session.id) / run_id
+            run_path=store.runs_dir(session.id) / run_id
             history=store.read_messages(session.id)
             notes=store.read_notes(session.id)
         else:

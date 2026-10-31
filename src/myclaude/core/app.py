@@ -99,9 +99,10 @@ class coreAPP:
 
     async def agent_run_handler(self,params:dict[str,Any])->AgentRunResult:
         assert self.config is not None
+        assert self.sessions is not None
 
         cmd=AgentRunCommand.model_validate(params)
-        session=await self.sessions(mode="one_shot",title=cmd.goal[:40])
+        session=await self.sessions.create(mode="one_shot",title=cmd.goal[:40])
         run_id=new_run_id()
         task=asyncio.create_task(self.sessions.seed_message(session.id,cmd.goal,run_id=run_id))
 
