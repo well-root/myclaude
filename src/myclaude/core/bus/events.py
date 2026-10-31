@@ -65,6 +65,7 @@ class ToolCallFailedEvent(BaseModel):
     error_type:str #zhe这里包括超时 调用错误 工具不存在
     error_msg:str
     elapsed_ms:int
+    attempt:int=1
     ts:str
 
 class LLMTokenEvent(BaseModel):
@@ -127,6 +128,34 @@ class SessionClosedEvent(BaseModel):
     ts: str
 
 
+class PermissionRequestedEvent(BaseModel):
+    type: Literal["permission.requested"] = "permission.requested"
+    run_id: str
+    tool_use_id: str
+    tool_name: str
+    params: dict[str, Any]
+    param_preview: str
+    session_id: str
+    ts: str
+
+
+class PermissionGrantedEvent(BaseModel):
+    type: Literal["permission.granted"] = "permission.granted"
+    run_id: str
+    tool_use_id: str
+    # "allow_once" | "always_allow" | "auto_allow"
+    decision: str
+    ts: str
+
+
+class PermissionDeniedEvent(BaseModel):
+    type: Literal["permission.denied"] = "permission.denied"
+    run_id: str
+    tool_use_id: str
+    # "deny_once" | "always_deny" | "auto_deny"
+    decision: str
+    ts: str
+
 
 # 根据 type 字段决定事件类型的判别联合 这里表示每个时间都可以写成现在的事情
 Event = Annotated[
@@ -146,7 +175,10 @@ Event = Annotated[
     | SessionMessageReceivedEvent
     | SessionWaitingForInputEvent
     | SessionResumedEvent
-    | SessionClosedEvent,
+    | SessionClosedEvent
+    | PermissionRequestedEvent
+    | PermissionGrantedEvent
+    | PermissionDeniedEvent,
     #优先读取type
     Discriminator("type"),
 ]

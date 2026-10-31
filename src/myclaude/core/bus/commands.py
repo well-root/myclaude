@@ -70,6 +70,15 @@ class SessionCloseResult(BaseModel):
     status: SessionStatus
 
 
+class PermissionRespondCommand(BaseModel):
+    type: Literal["permission.respond"] = "permission.respond"
+    tool_use_id: str
+    # "allow_once" | "always_allow" | "deny_once" | "always_deny"
+    decision: str
+
+
+class PermissionRespondResult(BaseModel):
+    ok: bool = True
 
 
 #根据type()来决定类型的判别联合
@@ -80,7 +89,8 @@ Command=Annotated[
     |SessionCreateCommand
     |SessionSendMessageCommand
     |SessionGetHistoryCommand
-    |SessionCloseCommand,
+    |SessionCloseCommand
+    |PermissionRespondCommand,
     Discriminator("type"),
 ]
 
