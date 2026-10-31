@@ -1,12 +1,23 @@
 #bash 执行工具
 from __future__ import  annotations
 import asyncio
+
+from pydantic import ConfigDict,Field,BaseModel
+
 from myclaude.core.tools.base import BaseTool,ToolResult
 
 MAX_OUTPUT_BYTES = 64 * 1024  # 64 KB
 DEFAULT_TIMEOUT = 60
+
+class BashParams(BaseModel):
+    model_config=ConfigDict(extra="ignore")
+    command: str
+    timeout: int=Field(default=DEFAULT_TIMEOUT,ge=1,le=120)
+
+
 #执行一个 shell 命令并返回其输出（标准输出和标准错误合并）。非交互式——需要用户输入的命令会挂起并超时。优先使用简短、专注的命令。输出截断为 64 KB。在 Windows 上，命令通过 cmd.exe 运行。
 class BashTool(BaseTool):
+    params_model = BashParams
     name = "bash"
     description = (
         "Execute a shell command and return its output (stdout + stderr combined). "
@@ -35,12 +46,11 @@ class BashTool(BaseTool):
 
     #执行shell 合并标准命令和标准错误命令，超时返回错误
     async def invoke(self,params:dict[str,object]) ->ToolResult:
-        command=str(params["command"])
-        try:
-            timeout = int(params.get("timeout") or DEFAULT_TIMEOUT)
-        except(TypeError,ValueError):
-            timeout = DEFAULT_TIMEOUT
-        timeout=max(1,min(timeout,120),)
+        p=BashParams.model_validate(params)
+        command=p.command
+        timeout=p.timeout
+
+
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
