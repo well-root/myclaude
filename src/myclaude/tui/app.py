@@ -580,28 +580,12 @@ class MyClaudeTuiApp(App[None]):
             )
         )
         self._update_header("running")
-        try:
-            await self._client.send_command(
-                "session.send_message",
-                {
-                    "session_id": self._session_id,
-                    "content": content,
-                },
-            )
-        except IpcError as e:
-            self._busy = False
-            prompt.disabled = False
-            prompt.border_title = (
-                "type a message — enter to send"
-            )
-            self._update_header("ready")
-            self._append(
-                Static(
-                    f"[red]send error: {escape(str(e))}"
-                    "[/red]",
-                    classes="log-line",
-                )
-            )
+        self.run_worker(
+            self._do_send_message(content),
+            exclusive=False,
+            name="send_message",
+        )
+
         # 在 worker 中执行 IPC 发送，使 App 消息泵在 agent 运行期间仍能处理键盘/焦点等消息
 
     async def _do_send_message(self, content: str) -> None:

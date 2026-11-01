@@ -3,7 +3,7 @@ from datetime import  UTC,datetime
 import logging
 from typing import TYPE_CHECKING
 
-from myclaude.core.context import BASE_SYSTEM_PROMPT,ExecutionContext
+from myclaude.core.context import BASE_SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 import asyncio
 from myclaude.core.bus.events import StepFinishedEvent, StepStartedEvent
@@ -67,24 +67,35 @@ class AgentLoop:
                 break
 
             #把记忆篮子加入 记忆内容#这也是观察阶段
-            blocks:list[dict[str,object]]=[]
+            blocks: list[dict[str, object]] = []
             if response.text:
                 blocks.append({"type": "text", "text": response.text})
             for tc in response.tool_calls:
-                result = await invoke_tool(
-                    self.registry, tc, self.bus, context.run_id,
-                    permission_manager=self.permission_manager,
-                    session_id=self.session_id,
+                blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.input,
+                    }
                 )
-                context.add_tool_result(tc.id, result.content, is_error=result.is_error)
+            if blocks:
+                context.add_assistant_messages(blocks)
 
-            #act
-            if response.stop_reason=="tool_use":
+            # 执行工具，只执行一次；结果作为紧随其后的 user 消息
+            if response.stop_reason == "tool_use":
                 for tc in response.tool_calls:
                     result = await invoke_tool(
-                        self.registry,tc,self.bus,context.run_id,
+                        self.registry,
+                        tc,
+                        self.bus,
+                        context.run_id,
+                        permission_manager=self.permission_manager,
+                        session_id=self.session_id,
                     )
-                    context.add_tool_result(tc.id, result.content,is_error=result.is_error)
+                    context.add_tool_result(
+                        tc.id, result.content, is_error=result.is_error
+                    )
 
             #最终的检查部分
             if response.stop_reason=="end_turn":

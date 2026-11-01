@@ -45,6 +45,10 @@ class ChatPrinter:
             print(f"[permission] {tool_name}  {param_preview}")
             print("  y=allow once  a=always allow  n=deny once  d=always deny")
             self.pending_permission_id = tool_use_id
+        elif t in ("permission.granted", "permission.denied"):
+            if event.get("tool_use_id") == self.pending_permission_id:
+                self.pending_permission_id = None
+
         elif t == "session.waiting_for_input":
             self._ensure_newline()
             print("[waiting for input]")
@@ -117,9 +121,14 @@ async def _chat_async(config:myclaudeconfig)->int:
                 tool_use_id = printer.pending_permission_id
                 printer.pending_permission_id = None
 
-
-
-
+                await client.send_command(
+                    "permission.respond",
+                    {
+                        "tool_use_id": tool_use_id,
+                        "decision": decision,
+                    },
+                )
+                continue  # 关键：不要继续走 session.send_message
 
             await client.send_command(
                 "session.send_message",
