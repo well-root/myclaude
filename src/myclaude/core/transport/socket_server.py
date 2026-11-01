@@ -115,6 +115,16 @@ class SocketServer:
                 pass
             logger.debug("client disconnected: %s", peer)
 
+            if self.broadcaster is not None:
+                self.broadcaster.unsubscribe(writer)
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=2.0)
+
+            except (TimeoutError, ConnectionResetError, BrokenPipeError, OSError):
+                pass
+            logger.debug("client disconnected: %s", peer)
+
     #持续读取换行分割的json并进行分发处理
     async def _read_loop(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         while True:
