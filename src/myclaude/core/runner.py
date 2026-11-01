@@ -19,6 +19,7 @@ from myclaude.core.events.writer import EventWriter
 from myclaude.core.llm.base import LLMProvider
 from myclaude.core.llm.provider import AnthropicProvider
 from myclaude.core.loop import AgentLoop
+from myclaude.core.permissions import PermissionManager
 from myclaude.core.runs import RUN_DIR, new_run_id
 from myclaude.core.session.model import Session
 from myclaude.core.session.store import SessionStore
@@ -64,6 +65,7 @@ class AgentRunner:
             extra_handlers:list[EventHandler] |None = None,
             run_dir:Path |None = None,
             trace:TraceWriter |None = None,
+            permission_manager:PermissionManager|None = None,
     )->None:
         self.config = config
         self.bus = bus
@@ -71,6 +73,7 @@ class AgentRunner:
         self.extra_handlers = extra_handlers or []
         self.run_dir = run_dir or RUN_DIR
         self.trace=trace
+        self.permission_manager=permission_manager
 
     #执行一次完整的调用
     async def run(self,goal:str,*,run_id:str|None=None)->None:
@@ -138,7 +141,10 @@ class AgentRunner:
                                             run_id=run_id,
 
                                             )
-                loop = AgentLoop(provider, registry, bus)
+                loop = AgentLoop(provider, registry, bus,
+                                permission_manager=self.permission_manager,
+                                session_id=session.id if session is not None else "",
+                                )
                 await loop.run(context)
 
             except asyncio.CancelledError:

@@ -27,7 +27,7 @@ from myclaude.core.bus.commands import (
     SessionGetHistoryCommand,
     SessionGetHistoryResult,
     SessionSendMessageCommand,
-    SessionSendMessageResult,
+    SessionSendMessageResult, PermissionRespondResult, PermissionRespondCommand,
 )
 from myclaude.core.bus.envelope import EventPushEnvelope
 from myclaude.core.config import get_config, myclaudeconfig
@@ -45,6 +45,9 @@ from myclaude.core.transport.socket_server import (
     get_connection_writer,
 )
 
+from myclaude.core.permissions.manager import PermissionManager
+from myclaude.core.permissions.storage import load_policy_file
+
 logger=logging.getLogger(__name__)
 
 def _now()->str:
@@ -60,6 +63,7 @@ class coreAPP:
         self.running_runs:set[asyncio.Task[None]]=set()
         self.config:myclaudeconfig|None=None
         self.sessions:SessionManager|None=None
+        self.permission_manager:PermissionManager|None=None
 
 
     #处理core.ping返回版本
@@ -220,6 +224,21 @@ class coreAPP:
             await writer.drain()
         return count
 
+    # 接收客户端权限审批响应，resolve 对应挂起的 Future
+    async def permission_respond_handler(
+            self, params: dict[str, Any]
+    ) -> PermissionRespondResult:
+        cmd = PermissionRespondCommand.model_validate(params)
+        logger.info(
+            "permission.respond received tool_use_id=%s decision=%s",
+            cmd.tool_use_id, cmd.decision,
+        )
+        if self.permission_manager is None:
+            logger.error("permission.respond: PermissionManager not initialized")
+            return PermissionRespondResult()
+        self.permission_manager.respond(cmd.tool_use_id, cmd.decision)
+        return PermissionRespondResult()
+
     async def run(self)->None:
         self.start_time=time.monotonic()
         self.config = get_config()
@@ -233,6 +252,19 @@ class coreAPP:
         self.broadcaster=IpcEventBroadcaster(trace=self.trace)
         self.bus.subscribe(self.broadcaster.handle)
 
+        # 权限管理器：进程内共享一份 pending / always 缓存
+        policy_file = Path("~/.myclaude/policy.toml").expanduser()
+        self.permission_manager = PermissionManager(
+            policy_file=policy_file,
+            timeout_s=self.config.permission.timeout_s,
+        )
+        logger.info(
+            "permission manager: timeout_s=%.1f  persistent=%d entries",
+            self.config.permission.timeout_s,
+            len(load_policy_file(policy_file)),
+        )
+
+
         #集中会话数据 放到用户目录
         store = SessionStore(Path("~/.myclaude/sessions").expanduser())
         self.sessions = SessionManager(
@@ -241,6 +273,7 @@ class coreAPP:
                 self.config,
                 bus=self.bus,
                 trace=self.trace,
+                permission_manager=self.permission_manager,
             ),
             bus=self.bus,
         )
@@ -259,6 +292,11 @@ class coreAPP:
         server.register(
             "session.close",
             self.session_close_handler
+        )
+
+        server.register(
+            "permission.respond",
+            self.permission_respond_handler,
         )
         addr=await server.start()
         logger.info("myclaude-core %s listening addr=%s", myclaude.__version__, addr)

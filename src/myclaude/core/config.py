@@ -40,6 +40,9 @@ class LoggingConfig:
     file: str = _DEFAULT_LOG_FILE
     format: str = _DEFAULT_LOG_FORMAT
 
+@dataclass
+class PermissionConfig:
+    timeout_s:float=60.0
 #定义myclaudeconfig
 @dataclass
 class myclaudeconfig:
@@ -49,7 +52,7 @@ class myclaudeconfig:
     agent: AgentConfig = field(default_factory=AgentConfig)
     llm: LlmConfig = field(default_factory=LlmConfig)
     trace:TraceConfig=field(default_factory=TraceConfig)
-
+    permission:PermissionConfig=field(default_factory=PermissionConfig)
 #默认值 → TOML → .env → 系统环境变量
 def get_config()->myclaudeconfig:
     config=myclaudeconfig()
@@ -178,6 +181,26 @@ def _apply_toml(config:myclaudeconfig,data:dict[str,Any])->None:
                 )
             config.trace.include_llm_payload = val
 
+    if "permission" in data:
+        perm = data["permission"]
+        if not isinstance(perm, dict):
+            raise SystemExit("Config error: [permission] must be a table")
+        unknown_perm: set[str] = set(perm.keys()) - {"timeout_s"}
+        if unknown_perm:
+            raise SystemExit(
+                "Unknown [permission] keys: "
+                + ", ".join(sorted(unknown_perm))
+            )
+        if "timeout_s" in perm:
+            val = perm["timeout_s"]
+            if not isinstance(val, (int, float)) or val < 0:
+                raise SystemExit(
+                    "Config error: permission.timeout_s "
+                    "must be a non-negative number"
+                )
+            config.permission.timeout_s = float(val)
+
+
 #布尔解析器
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
@@ -255,6 +278,24 @@ def _apply_env(config:myclaudeconfig)->None:
         "MYCLAUDE_TRACE_INCLUDE_LLM_PAYLOAD",
         config.trace.include_llm_payload,
     )
+
+
+
+    perm_timeout = os.environ.get("MYCLAUDE_PERMISSION_TIMEOUT_S")
+    if perm_timeout is not None:
+        try:
+            val = float(perm_timeout)
+            if val < 0:
+                raise SystemExit(
+                    "Config error: MYCLAUDE_PERMISSION_TIMEOUT_S "
+                    f"must be >= 0, got: {perm_timeout!r}"
+                )
+            config.permission.timeout_s = val
+        except ValueError:
+            raise SystemExit(
+                "Config error: MYCLAUDE_PERMISSION_TIMEOUT_S "
+                f"must be a number, got: {perm_timeout!r}"
+            )
 
 
 

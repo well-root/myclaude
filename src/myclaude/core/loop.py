@@ -1,6 +1,8 @@
 from __future__ import annotations
 from datetime import  UTC,datetime
 import logging
+from typing import TYPE_CHECKING
+
 from myclaude.core.context import BASE_SYSTEM_PROMPT,ExecutionContext
 logger = logging.getLogger(__name__)
 import asyncio
@@ -11,6 +13,8 @@ from myclaude.core.llm.base import LLMProvider
 from myclaude.core.tools.invocation import invoke_tool
 from myclaude.core.tools.registry import ToolRegistry
 
+if TYPE_CHECKING:
+    from myclaude.core.permissions.manager import PermissionManager
 def _now()->str:
     return datetime.now(UTC).isoformat()
 
@@ -21,10 +25,15 @@ class AgentLoop:
                 provider: LLMProvider,
                 registry: ToolRegistry,
                 bus: EventBus,
+                *,
+                permission_manager: PermissionManager|None=None,
+                session_id:str="",
                 )->None:
         self.provider = provider
         self.registry = registry
         self.bus = bus
+        self.permission_manager = permission_manager
+        self.session_id = session_id
 
 
     #驱动计划和行动 感觉想react
@@ -62,10 +71,12 @@ class AgentLoop:
             if response.text:
                 blocks.append({"type": "text", "text": response.text})
             for tc in response.tool_calls:
-                blocks.append(
-                    {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.input}
+                result = await invoke_tool(
+                    self.registry, tc, self.bus, context.run_id,
+                    permission_manager=self.permission_manager,
+                    session_id=self.session_id,
                 )
-            context.add_assistant_messages(blocks)
+                context.add_tool_result(tc.id, result.content, is_error=result.is_error)
 
             #act
             if response.stop_reason=="tool_use":
