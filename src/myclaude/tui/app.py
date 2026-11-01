@@ -1,6 +1,6 @@
 # tui/app.py 展示画面（Ai）
 from __future__ import annotations
-
+import logging
 import asyncio
 import json
 from typing import Any
@@ -21,7 +21,7 @@ from myclaude.core.transport.socket_client import (
     SocketClient,
 )
 
-
+log=logging.getLogger(__name__)
 def _preview(s: str, n: int) -> str:
     return s[:n] + "…" if len(s) > n else s
 
@@ -54,6 +54,185 @@ def _param_summary(
             for key, value in list(params.items())[:2]
         ]
     return _preview(", ".join(parts), max_len)
+
+class PermissionSelect(Static):
+    """内联权限选择控件：挂载在日志流外，键盘焦点无需 ModalScreen。"""
+
+    can_focus = True
+
+    DEFAULT_CSS = """
+    PermissionSelect {
+        height: auto;
+        padding: 0 2;
+        margin-bottom: 1;
+    }
+    """
+
+    _CHOICES: tuple[tuple[str, str, str], ...] = (
+        ("allow_once",   "Allow once",   "y / 1"),
+        ("always_allow", "Always allow", "a / 2"),
+        ("deny_once",    "Deny",         "n / 3"),
+        ("always_deny",  "Always deny",  "d / 4"),
+    )
+    _KEY_MAP: dict[str, str] = {
+        "y": "allow_once",  "1": "allow_once",
+        "a": "always_allow", "2": "always_allow",
+        "n": "deny_once",   "3": "deny_once",
+        "d": "always_deny", "4": "always_deny",
+    }
+
+    # 用户作出权限决策时发布，携带工具 ID 和决策字符串
+    class Decided(Message):
+        def __init__(
+                self,
+                widget: "PermissionSelect",
+                tool_use_id: str,
+                decision: str,
+        ) -> None:
+            self.widget = widget
+            self.tool_use_id = tool_use_id
+            self.decision = decision
+            super().__init__()
+
+    # 初始化控件，存储工具 ID（用于 IPC 回复）
+    def __init__(self, tool_use_id: str) -> None:
+        super().__init__("")
+        self._tool_use_id = tool_use_id
+        self._cursor = 0
+
+    def on_mount(self) -> None:
+        self.update(self._render_ui())
+        self.focus()
+        log.debug(
+            "PermissionSelect.on_mount  can_focus=%s  focused_after=%r",
+            self.can_focus,
+            self.app.focused,
+        )
+
+    # 生成带光标高亮的选项列表文本
+    def _render_ui(self) -> str:
+        lines: list[str] = []
+        for i, (_, label, key_hint) in enumerate(self._CHOICES):
+            if i == self._cursor:
+                lines.append(
+                    f"  [bold cyan]❯ {label}[/bold cyan]  "
+                    f"[dim]{key_hint}[/dim]"
+                )
+            else:
+                lines.append(
+                    f"    {label}  [dim]{key_hint}[/dim]"
+                )
+        lines.append("[dim]  ↑↓ navigate   enter confirm[/dim]")
+        return "\n".join(lines)
+
+    # 方向键导航；快捷键直接选择；enter 确认光标位置
+    def on_key(self, event: events.Key) -> None:
+        log.debug(
+            "PermissionSelect.on_key  key=%r  char=%r",
+            event.key, event.character,
+        )
+        key = event.key
+        if key in ("up", "k"):
+            event.stop()
+            self._cursor = (
+                self._cursor - 1
+            ) % len(self._CHOICES)
+            self.update(self._render_ui())
+        elif key in ("down", "j"):
+            event.stop()
+            self._cursor = (
+                self._cursor + 1
+            ) % len(self._CHOICES)
+            self.update(self._render_ui())
+        elif key == "enter":
+            event.stop()
+            self._pick(self._CHOICES[self._cursor][0])
+        else:
+            decision = self._KEY_MAP.get(key)
+            if decision is not None:
+                event.stop()
+                self._pick(decision)
+
+    # 发布决策消息，由宿主 App 负责 IPC 回复和控件清理
+    def _pick(self, decision: str) -> None:
+        log.debug("PermissionSelect._pick  decision=%s", decision)
+        self.post_message(
+            self.Decided(self, self._tool_use_id, decision)
+        )
+
+
+class PermissionBlock(Static):
+    """日志里的权限审批摘要。"""
+
+    _LABEL_MAP: dict[str, str] = {
+        "allow_once":   "allowed (once)",
+        "always_allow": "always allowed",
+        "deny_once":    "denied",
+        "always_deny":  "always denied",
+        "timeout":      "⏱ timed out",
+    }
+    LABEL_MAP = _LABEL_MAP
+
+    # 子类提交消息：用户作出权限决策时发布
+    class Resolved(Message):
+        def __init__(
+                self,
+                block: "PermissionBlock",
+                decision: str,
+        ) -> None:
+            self.block = block
+            self.decision = decision
+            super().__init__()
+
+    # 初始化审批块，记录工具 ID、名称和参数预览
+    def __init__(
+            self,
+            tool_use_id: str,
+            tool_name: str,
+            param_preview: str,
+    ) -> None:
+        self._tool_use_id = tool_use_id
+        self._tool_name = tool_name
+        self._param_preview = param_preview
+        self._resolved = False
+        super().__init__(
+            self._pending_text(), classes="log-line"
+        )
+
+    def _pending_text(self) -> str:
+        preview = (
+            f"  [dim]{escape(self._param_preview)}[/dim]"
+            if self._param_preview else ""
+        )
+        return (
+            f"[bold red]? permission[/bold red]  "
+            f"[bold]{self._tool_name}[/bold]{preview}"
+        )
+
+    # 将块收缩为单行摘要并发布 Resolved 消息
+    def _resolve(self, decision: str) -> None:
+        if self._resolved:
+            return
+        self._resolved = True
+        allowed = decision in ("allow_once", "always_allow")
+        icon = (
+            "[bold green]✓[/bold green]"
+            if allowed
+            else "[bold red]✗[/bold red]"
+        )
+        label = self._LABEL_MAP.get(decision, decision)
+        preview = (
+            f"  [dim]{escape(self._param_preview)}[/dim]"
+            if self._param_preview else ""
+        )
+        self.update(
+            f"{icon} permission  "
+            f"[bold]{self._tool_name}[/bold]{preview}  "
+            f"[dim]{label}[/dim]"
+        )
+        self.post_message(self.Resolved(self, decision))
+
+
 
 
 class LLMStreamBlock(Static):
@@ -288,6 +467,7 @@ class MyClaudeTuiApp(App[None]):
         self._pending_tool_blocks: dict[
             str, ToolCallBlock
         ] = {}
+        self._pending_permission_blocks: dict[str,PermissionBlock]={}
         self._session_id: str | None = None
         self._busy = False
 
@@ -312,6 +492,40 @@ class MyClaudeTuiApp(App[None]):
         if prompt is not None:
             prompt.disabled = True
             prompt.border_title = "connecting..."
+
+    def on_key(self, event: events.Key) -> None:
+        log.debug(
+            "App.on_key  key=%r  focused=%r",
+            event.key, self.focused,
+        )
+        if not self._pending_permission_blocks:
+            return
+        try:
+            select = self.query_one(PermissionSelect)
+            if select.has_focus:
+                return  # PermissionSelect 有焦点时自行处理
+            key = event.key
+            decision = PermissionSelect._KEY_MAP.get(key)
+            if decision:
+                event.stop()
+                select._pick(decision)
+            elif key in ("up", "k"):
+                event.stop()
+                select._cursor = (select._cursor - 1) % len(PermissionSelect._CHOICES)
+                select.update(select._render_ui())
+            elif key in ("down", "j"):
+                event.stop()
+                select._cursor = (select._cursor + 1) % len(PermissionSelect._CHOICES)
+                select.update(select._render_ui())
+            elif key == "enter":
+                event.stop()
+                select._pick(
+                    PermissionSelect._CHOICES[
+                        select._cursor
+                    ][0]
+                )
+        except Exception:
+            pass
 
     # 退出前尽力关闭当前 session，失败也不阻塞退出
     async def action_quit(self) -> None:
@@ -388,6 +602,79 @@ class MyClaudeTuiApp(App[None]):
                     classes="log-line",
                 )
             )
+        # 在 worker 中执行 IPC 发送，使 App 消息泵在 agent 运行期间仍能处理键盘/焦点等消息
+
+    async def _do_send_message(self, content: str) -> None:
+        if self._client is None:
+            return
+        try:
+            await self._client.send_command(
+                "session.send_message",
+                {
+                    "session_id": self._session_id,
+                    "content": content,
+                },
+            )
+        except (IpcError, RuntimeError, OSError) as e:
+            self._busy = False
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.disabled = False
+                prompt.border_title = (
+                    "type a message — enter to send"
+                )
+            self._update_header("ready")
+            self._append(
+                Static(
+                    f"[red]send error: {escape(str(e))}"
+                    "[/red]",
+                    classes="log-line",
+                )
+            )
+
+        # 处理内联审批控件的用户决策：发送 IPC 响应并恢复输入框
+
+    async def on_permission_select_decided(
+            self, msg: PermissionSelect.Decided
+    ) -> None:
+        tool_use_id = msg.tool_use_id
+        decision = msg.decision
+        log.info(
+            "permission decided tool_use_id=%s decision=%s",
+            tool_use_id, decision,
+        )
+        try:
+            await msg.widget.remove()
+            perm_block = self._pending_permission_blocks.pop(
+                tool_use_id, None
+            )
+            if perm_block is not None:
+                perm_block._resolve(decision)
+            if self._client is not None:
+                try:
+                    await self._client.send_command(
+                        "permission.respond",
+                        {
+                            "tool_use_id": tool_use_id,
+                            "decision": decision,
+                        },
+                    )
+                except (IpcError, RuntimeError, OSError):
+                    pass
+            if not self._pending_permission_blocks:
+                p = self._prompt()
+                if p is not None:
+                    p.disabled = False
+                    p.border_title = (
+                        "type a message — enter to send"
+                    )
+                    p.focus()
+        except Exception:
+            log.exception(
+                "on_permission_select_decided failed "
+                "tool_use_id=%s",
+                tool_use_id,
+            )
 
     # 向日志视图追加一个 widget 并滚动到底部
     def _append(self, widget: Widget) -> None:
@@ -402,6 +689,14 @@ class MyClaudeTuiApp(App[None]):
         if self._current_llm is not None:
             self._current_llm.finalize_markdown()
         self._current_llm = None
+
+    # 在输入框正上方内联挂载权限选择控件
+    def _mount_permission_select(self, select: PermissionSelect) -> None:
+        prompt = self._prompt()
+        if prompt is not None:
+            self.mount(select, before=prompt)
+        else:
+            self.mount(select)
 
     # 安全获取输入框，组件测试未挂载时返回 None
     def _prompt(self) -> ChatTextArea | None:
@@ -480,6 +775,7 @@ class MyClaudeTuiApp(App[None]):
                         "llm.token",
                         "llm.user",
                         "log.*",
+                        "permission.*",
                     ],
                     "scope": "global",
                 }
@@ -720,6 +1016,59 @@ class MyClaudeTuiApp(App[None]):
                     classes="log-line",
                 )
             )
+
+        elif t == "permission.requested":
+            tool_use_id = str(event.get("tool_use_id", ""))
+            tool_name = str(event.get("tool_name", ""))
+            param_preview = str(event.get("param_preview", ""))
+            try:
+                focused_repr = repr(self.focused)
+            except Exception:
+                focused_repr = "?"
+            log.info(
+                "permission.requested tool=%s id=%s  app.focused=%s",
+                tool_name, tool_use_id, focused_repr,
+            )
+            perm_block = PermissionBlock(
+                tool_use_id, tool_name, param_preview
+            )
+            self._pending_permission_blocks[tool_use_id] = perm_block
+            prompt = self._prompt()
+            if prompt is not None:
+                prompt.disabled = True
+                prompt.border_title = "permission required"
+            self._append(perm_block)
+            select = PermissionSelect(tool_use_id)
+            self._mount_permission_select(select)
+            log.debug(
+                "PermissionSelect mounted before #prompt  pending=%d",
+                len(self._pending_permission_blocks),
+            )
+
+        elif t == "permission.denied":
+            # 处理超时或断连等非用户交互触发的 deny；
+            # 用户主动 deny 已由 on_permission_select_decided 处理
+            tool_use_id = str(event.get("tool_use_id", ""))
+            decision = str(event.get("decision", "denied"))
+            if tool_use_id in self._pending_permission_blocks:
+                perm_block = self._pending_permission_blocks.pop(
+                    tool_use_id, None
+                )
+                if perm_block is not None:
+                    perm_block._resolve(decision)
+                try:
+                    select = self.query_one(PermissionSelect)
+                    select.remove()
+                except Exception:
+                    pass
+                if not self._pending_permission_blocks:
+                    p = self._prompt()
+                    if p is not None:
+                        p.disabled = False
+                        p.border_title = (
+                            "type a message — enter to send"
+                        )
+                        p.focus()
 
 # TUI 入口：供 tui/__main__.py 调用
 def run(
