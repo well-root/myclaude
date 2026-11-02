@@ -20,26 +20,34 @@ from myclaude.core.session.model import Session, SessionMode
 from myclaude.core.session.store import SessionStore
 
 if TYPE_CHECKING:
+    from myclaude.core.llm.base import LLMProvider
     from myclaude.core.runner import AgentRunner
 
 SESSION_NOT_FOUND = -32010
 SESSION_CLOSED = -32011
 SESSION_BUSY = -32012
+COMPACT_PROVIDER_MISSING = -32020
+COMPACT_FAILED = -32021
 
 def _now()->str:
     return datetime.now(UTC).isoformat()
 
 class SessionManager:
-    # 初始化会话管理器，接入文件存储、runner 工厂和事件总线
+    # 初始化会话管理器，接入文件存储、runner 工厂、事件总线和可选的 LLM provider
     def __init__(
         self,
         store: SessionStore,
         runner_factory: Callable[[], AgentRunner],
         bus: EventBus,
+        *,
+        provider: LLMProvider | None = None,
+        provider_factory: Callable[[], LLMProvider] | None = None,
     ) -> None:
         self._store = store
         self._runner_factory = runner_factory
         self._bus = bus
+        self._provider = provider
+        self._provider_factory = provider_factory
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -137,6 +145,65 @@ class SessionManager:
                 SessionClosedEvent(session_id=sid, ts=session.updated_at)
             )
 
+    # 手动压缩指定 session 的 thread，将摘要持久化写入 thread.jsonl
+    async def compact(self, sid: str, focus: str = "") -> Any:
+        self._get_session(sid)
+        lock = self._locks[sid]
+        if lock.locked():
+            raise HandlerError(SESSION_BUSY, "session busy")
+
+        provider = self._provider
+        if provider is None and self._provider_factory is not None:
+            try:
+                provider = self._provider_factory()
+            except (Exception, SystemExit) as exc:
+                raise HandlerError(
+                    COMPACT_PROVIDER_MISSING,
+                    f"provider not available for compaction: {exc}",
+                ) from exc
+        if provider is None:
+            raise HandlerError(
+                COMPACT_PROVIDER_MISSING,
+                "provider not available for compaction",
+            )
+
+        async with lock:
+            from myclaude.core.bus.commands import SessionCompactResult
+            from myclaude.core.compact.compactor import Compactor
+
+            messages = self._store.read_messages(sid)
+            compactor = Compactor(
+                self._bus,
+                self._store.session_dir(sid),
+                sid,
+            )
+            result = await compactor.compact_messages(
+                messages,
+                provider,
+                focus=focus,
+            )
+            if result is None:
+                raise HandlerError(
+                    COMPACT_FAILED,
+                    "compaction failed or not beneficial",
+                )
+            # 手动压缩同样留一份摘要，方便事后审计
+            compactor.write_summary(result.summary_text)
+            self._store.write_compacted(sid, [
+                {"role": "user", "content": result.summary_text},
+                {
+                    "role": "assistant",
+                    "content": "Understood, I'll continue from this summary.",
+                },
+            ])
+            return SessionCompactResult(
+                summary_tokens=result.summary_tokens,
+                saved_tokens=max(
+                    0,
+                    result.original_token_estimate - result.summary_tokens,
+                ),
+            )
+
     #读取历史
     async def get_history(self, sid: str) -> list[dict[str, Any]]:
         self._get_session(sid)
@@ -148,4 +215,3 @@ class SessionManager:
         if session is None:
             raise HandlerError(SESSION_NOT_FOUND, "session not found")
         return session
-

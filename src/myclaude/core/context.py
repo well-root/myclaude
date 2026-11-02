@@ -23,6 +23,10 @@ class ExecutionContext:
     step:int = 0
     reason:str | None = None
     result:str=""
+    global_context: str = ""
+    project_context: str = ""
+    new_messages: list[dict[str, Any]] = field(default_factory=list)
+
 
 #将结果作为第一条加入
     def __post_init__(self)->None:
@@ -33,22 +37,28 @@ class ExecutionContext:
 
     #返回run的提示词 注入session note
     def system_prompt(self,base:str=BASE_SYSTEM_PROMPT)->str:
-        if not self.session_notes.strip():
-            return base
-        return (
-                base
-                + "\n\n## Session Notes\n"
+        parts: list[str] = [base]
+        if self.global_context.strip():
+            parts.append("\n\n## Global Context\n" + self.global_context.strip())
+        if self.project_context.strip():
+            parts.append("\n\n## Project Context\n" + self.project_context.strip())
+        if self.session_notes.strip():
+            parts.append(
+                "\n\n## Session Notes\n"
                 + self.session_notes.strip()
                 + "\n\nRemember important durable facts by calling note_save."
-        )
+            )
+        return "".join(parts)
 
 
 
 
             #llm响应的content block追加消息
     def add_assistant_messages(self,content:list[Any]) -> None:
-        self.messages.append({"role": "assistant", "content": content})
-    
+        msg:dict[str,Any]={"role": "assistant", "content": content}
+        self.messages.append(msg)
+        self.new_messages.append(msg)
+
     
     #调用工具的调用
     def add_tool_result(self,tool_use_id:str,content:str,is_error:bool=False) -> None:
@@ -74,7 +84,9 @@ class ExecutionContext:
             last["content"].append(block)
         
         else:
-            self.messages.append({"role":"user","content":[block]})
+            msg: dict[str, Any] = {"role": "user", "content": [block]}
+            self.messages.append(msg)
+            self.new_messages.append(msg)
 
     #返回true表示loop应该停止
     def is_done(self)->bool:

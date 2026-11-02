@@ -12,6 +12,7 @@ from myclaude.core.bus.events import (
     RunFinishedEvent,
     RunStartedEvent,
 )
+from myclaude.core.compact.compactor import Compactor
 from myclaude.core.config import myclaudeconfig
 from myclaude.core.context import ExecutionContext
 from myclaude.core.events.bus import EventBus, EventHandler
@@ -19,6 +20,7 @@ from myclaude.core.events.writer import EventWriter
 from myclaude.core.llm.base import LLMProvider
 from myclaude.core.llm.provider import AnthropicProvider
 from myclaude.core.loop import AgentLoop
+from myclaude.core.memory.loader import load_context_file
 from myclaude.core.permissions import PermissionManager
 from myclaude.core.runs import RUN_DIR, new_run_id
 from myclaude.core.session.model import Session
@@ -99,6 +101,10 @@ class AgentRunner:
             notes=""
         run_path.mkdir(parents=True, exist_ok=True)
 
+        #从磁盘读取后拼进 system prompt
+        global_ctx=load_context_file(Path("~/.myclaude/context.md"))
+        project_ctx=load_context_file(Path(".myclaude/context.md"))
+
         # 有外部 bus 就用外部 bus（daemon 的全局 bus）；
         # 没有就新建一个本地 bus，保持 s1 的直接调用方式不变。
         bus = self.bus if self.bus is not None else EventBus()
@@ -111,10 +117,12 @@ class AgentRunner:
             max_steps=self.config.agent.max_steps,
             prefill_messages=history,
             session_notes=notes,
+            global_context=global_ctx,
+            project_context=project_ctx,
         )
 
-        # 历史消息已经全部在 thread 里，run 结束后只追加新增部分
-        prefill_len = len(history)
+        # 历史消息已经全部在 thread 里，run 结束后只追加新增部分。
+        # new_messages 独立于 context.messages，auto compact 不会清空它。
 
         #每次run就保存一个独立的.tasks目录
         task_manager = TaskManager(run_path / ".tasks")
@@ -141,9 +149,19 @@ class AgentRunner:
                                             run_id=run_id,
 
                                             )
+                # 自动 compact 的 summary 写到 session 目录；无 session 时写到 run 目录
+                session_dir = (
+                    store.session_dir(session.id)
+                    if session is not None and store is not None
+                    else run_path
+                )
+                session_id_str = session.id if session is not None else ""
+                compactor = Compactor(bus, session_dir, session_id_str)
                 loop = AgentLoop(provider, registry, bus,
                                 permission_manager=self.permission_manager,
-                                session_id=session.id if session is not None else "",
+                                compactor=compactor,
+                                compact_threshold=self.config.compaction.auto_threshold,
+                                session_id=session_id_str,
                                 )
                 await loop.run(context)
 
@@ -176,7 +194,7 @@ class AgentRunner:
             if session is not None and store is not None:
                 store.append_messages(
                     session.id,
-                    context.messages[prefill_len:],
+                    context.new_messages,
                     run_id=run_id,
                 )
 
@@ -218,4 +236,6 @@ class AgentRunner:
             registry.register(NoteSaveTool(store,session.id,run_id))
 
         return registry
+
+
 
