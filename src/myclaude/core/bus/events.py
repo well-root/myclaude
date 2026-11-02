@@ -82,6 +82,7 @@ class LLMUserEvent(BaseModel):
     output_tokens:int
     cache_read_input_tokens:int
     cache_read_output_tokens:int
+    context_pct:float=0.0
     ts:str
 
 class LLMModelSelectedEvent(BaseModel):
@@ -157,6 +158,18 @@ class PermissionDeniedEvent(BaseModel):
     ts: str
 
 
+
+class ContextCompactedEvent(BaseModel):
+    type: Literal["context.compacted"] = "context.compacted"
+    session_id: str
+    run_id: str
+    original_tokens: int
+    summary_tokens: int
+    ts: str
+
+
+
+
 # 根据 type 字段决定事件类型的判别联合 这里表示每个时间都可以写成现在的事情
 Event = Annotated[
     CoreStartedEvent
@@ -178,7 +191,8 @@ Event = Annotated[
     | SessionClosedEvent
     | PermissionRequestedEvent
     | PermissionGrantedEvent
-    | PermissionDeniedEvent,
+    | PermissionDeniedEvent
+    |ContextCompactedEvent,
     #优先读取type
     Discriminator("type"),
 ]

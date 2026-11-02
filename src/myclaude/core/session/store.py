@@ -5,6 +5,11 @@ from datetime import UTC,datetime
 from pathlib import Path
 from typing import Any
 
+from myclaude.core.compact.budget import (
+    TOOL_RESULT_KEEP,
+    TOOL_RESULT_LIMIT,
+    truncate_tool_results,
+)
 from myclaude.core.session.model import Session
 
 logger = logging.getLogger(__name__)
@@ -14,10 +19,18 @@ def _now()->str:
     return datetime.now(UTC).isoformat()
 
 class SessionStore:
-    #初始化文件来存储根目录
-    def __init__(self,root:Path)->None:
+    #初始化文件来存储根目录；截断阈值可由 [compaction] 配置覆盖
+    def __init__(
+        self,
+        root:Path,
+        *,
+        tool_result_limit:int=TOOL_RESULT_LIMIT,
+        tool_result_keep:int=TOOL_RESULT_KEEP,
+    )->None:
         self.root=root.expanduser()
         self.root.mkdir(exist_ok=True,parents=True)
+        self.tool_result_limit=tool_result_limit
+        self.tool_result_keep=tool_result_keep
 
     #指定返回的路径
     def session_dir(self,sid:str)->Path:
@@ -93,7 +106,13 @@ class SessionStore:
                 {"role": role, "content": row.get("content", "")}
             )
 
-        return self._trim_orphan_tool_use(messages)
+        # 先保证 tool_use / tool_result 配对合法，再做长度截断
+        messages = self._trim_orphan_tool_use(messages)
+        return truncate_tool_results(
+            messages,
+            limit=self.tool_result_limit,
+            keep=self.tool_result_keep,
+        )
     #写入操作
     def write_meta(self,session:Session)->None:
         path=self.session_dir(session.id)
@@ -128,6 +147,28 @@ class SessionStore:
             logger.warning("trim orphan tool_use blocks from thread")
             return messages[:last_balanced]
         return messages
+
+    # 将压缩后的消息覆盖写入 thread.jsonl，原文件备份为 thread_<ts>.jsonl.bak
+    def write_compacted(
+        self,
+        sid: str,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        session_dir = self.session_dir(sid)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        path = session_dir / "thread.jsonl"
+        ts_str = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
+        bak = session_dir / f"thread_{ts_str}.jsonl.bak"
+        if path.exists():
+            path.rename(bak)
+        with path.open("w", encoding="utf-8") as f:
+            for msg in messages:
+                row: dict[str, Any] = {
+                    "ts": _now(),
+                    "role": msg["role"],
+                    "content": msg["content"],
+                }
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     # 读取 notes.md 全文，文件不存在时返回空字符串
     def read_notes(self, sid: str) -> str:
