@@ -27,12 +27,16 @@ from myclaude.core.bus.commands import (
     SessionGetHistoryCommand,
     SessionGetHistoryResult,
     SessionSendMessageCommand,
-    SessionSendMessageResult, PermissionRespondResult, PermissionRespondCommand,
+    SessionSendMessageResult,
+    SessionCompactCommand,
+    SessionCompactResult,
+    PermissionRespondResult, PermissionRespondCommand,
 )
 from myclaude.core.bus.envelope import EventPushEnvelope
 from myclaude.core.config import get_config, myclaudeconfig
 from myclaude.core.events.bus import EventBus
 from myclaude.core.logging_setup import setup_logging
+from myclaude.core.llm.provider import AnthropicProvider
 from myclaude.core.runner import AgentRunner
 
 from myclaude.core.runs import events_file, new_run_id
@@ -239,6 +243,15 @@ class coreAPP:
         self.permission_manager.respond(cmd.tool_use_id, cmd.decision)
         return PermissionRespondResult()
 
+    # 手动压缩 session thread，将摘要持久化写入 thread.jsonl
+    async def session_compact_handler(
+            self, params: dict[str, Any]
+    ) -> SessionCompactResult:
+        assert self.sessions is not None
+        cmd = SessionCompactCommand.model_validate(params)
+        result = await self.sessions.compact(cmd.session_id, cmd.focus)
+        return result  # type: ignore[no-any-return]
+
     async def run(self)->None:
         self.start_time=time.monotonic()
         self.config = get_config()
@@ -265,8 +278,12 @@ class coreAPP:
         )
 
 
-        #集中会话数据 放到用户目录
-        store = SessionStore(Path("~/.myclaude/sessions").expanduser())
+        #集中会话数据 放到用户目录；tool_result 截断阈值来自 [compaction]
+        store = SessionStore(
+            Path("~/.myclaude/sessions").expanduser(),
+            tool_result_limit=self.config.compaction.tool_result_limit,
+            tool_result_keep=self.config.compaction.tool_result_keep,
+        )
         self.sessions = SessionManager(
             store,
             runner_factory=lambda: AgentRunner(
@@ -276,6 +293,10 @@ class coreAPP:
                 permission_manager=self.permission_manager,
             ),
             bus=self.bus,
+            # 只有真正执行 /compact 时才创建 provider，避免无 API key 时 daemon 启动失败
+            provider_factory=lambda: AnthropicProvider(
+                self.config.llm.default_model
+            ),
         )
 
         server = SocketServer(self.config.host, self.config.port,self.broadcaster,trace=self.trace)
@@ -297,6 +318,10 @@ class coreAPP:
         server.register(
             "permission.respond",
             self.permission_respond_handler,
+        )
+        server.register(
+            "session.compact",
+            self.session_compact_handler,
         )
         addr=await server.start()
         logger.info("myclaude-core %s listening addr=%s", myclaude.__version__, addr)
@@ -338,11 +363,5 @@ class coreAPP:
     #启动coreapp
 def run()->None:
     asyncio.run(coreAPP().run())
-
-
-
-
-
-
 
 

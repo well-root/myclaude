@@ -7,6 +7,7 @@ class UsageStats:
     output_tokens: int
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    context_pct:float=0.0 #上下文占据模型的比例
 
 @dataclass
 class ToolCallBlock:

@@ -16,6 +16,18 @@ from myclaude.core.llm.types import LLMResponse,ToolCallBlock,UsageStats
 def _now()->str:
     return datetime.now(UTC).isoformat()
 
+# 各模型的 context window；未知模型保守按 200k 计算
+_MODEL_CONTEXT_WINDOWS:dict[str,int]={
+    "deepseek-flash":1_048_576,
+    "deepseek-chat":131_072,
+    "claude-sonnet-4-6":200_000,
+    "claude-haiku-4-5-20251001":200_000,
+    "claude-opus-4-7":200_000,
+}
+
+def _context_window(model:str)->int:
+    return _MODEL_CONTEXT_WINDOWS.get(model,200_000)
+
 class AnthropicProvider:
     #初始化客户端 跳过apikey去检验
     def __init__(self,model:str,client:Any=None)->None:
@@ -82,6 +94,11 @@ class AnthropicProvider:
         cache_read:int=getattr(usage,"cache_read_input_tokens",0) or 0
         cache_write:int=getattr(usage,"cache_creation_input_tokens",0) or 0
 
+        # 本次 prompt 的实际规模 = 未缓存输入 + 缓存命中 + 本次写入缓存
+        prompt_tokens = usage.input_tokens + cache_read + cache_write
+        context_pct = prompt_tokens / _context_window(self._model)
+
+
         await bus.publish(
             LLMUserEvent(
                 run_id=run_id,
@@ -89,6 +106,7 @@ class AnthropicProvider:
                 output_tokens=usage.output_tokens,
                 cache_read_input_tokens=cache_read,
                 cache_read_output_tokens=cache_write,
+                context_pct=context_pct,
                 ts=_now(),
 
             )
@@ -115,6 +133,7 @@ class AnthropicProvider:
                 output_tokens=usage.output_tokens,
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_write,
+                context_pct=context_pct,
             ),
 
 
