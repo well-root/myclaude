@@ -26,6 +26,8 @@ class ExecutionContext:
     global_context: str = ""
     project_context: str = ""
     new_messages: list[dict[str, Any]] = field(default_factory=list)
+    #skill或者subanget可用覆盖system prompt
+    system_prompt_override:str|None=None
 
 
 #将结果作为第一条加入

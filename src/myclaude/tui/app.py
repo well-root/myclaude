@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import json
+import time
 from typing import Any
 
 from rich.markdown import Markdown as RichMarkdown
@@ -16,6 +17,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Label, Static, TextArea
 
+from myclaude.core.skills.loader import SkillLoader
 from myclaude.core.transport.socket_client import (
     IpcError,
     SocketClient,
@@ -377,6 +379,85 @@ class ToolCallBlock(Widget):
             )
             self.add_class("expanded")
 
+class SlashCompleteWidget(Static):
+    """斜杠命令自动补全弹出框：输入 / 时显示可用 skill 列表。"""
+
+    can_focus = False
+
+    DEFAULT_CSS = """
+    SlashCompleteWidget {
+        height: auto;
+        padding: 0 1;
+        margin: 0 2;
+        background: $surface;
+        border: round $surface-lighten-2;
+    }
+    """
+
+    # 用户选中某条命令时发布
+    class Selected(Message):
+        def __init__(self, skill_name: str) -> None:
+            self.skill_name = skill_name
+            super().__init__()
+
+    def __init__(self, items: list[tuple[str, str]]) -> None:
+        super().__init__("")
+        self._all_items = items
+        self._filtered: list[tuple[str, str]] = list(items)
+        self._cursor = 0
+
+    # 根据查询字符串筛选列表，重置光标并重新渲染
+    def set_query(self, query: str) -> None:
+        q = query.lower()
+        self._filtered = [
+            (n, d) for n, d in self._all_items if not q or q in n.lower()
+        ]
+        self._cursor = min(self._cursor, max(0, len(self._filtered) - 1))
+        if self.is_attached:
+            self._redraw()
+
+    def move_up(self) -> None:
+        if self._filtered:
+            self._cursor = (self._cursor - 1) % len(self._filtered)
+            self._redraw()
+
+    def move_down(self) -> None:
+        if self._filtered:
+            self._cursor = (self._cursor + 1) % len(self._filtered)
+            self._redraw()
+
+    def select_current(self) -> None:
+        if self._filtered:
+            self.post_message(self.Selected(self._filtered[self._cursor][0]))
+
+    def has_selection(self) -> bool:
+        return len(self._filtered) > 0
+
+    def on_mount(self) -> None:
+        self._redraw()
+
+    # 渲染筛选后的命令列表，高亮当前光标项
+    def _redraw(self) -> None:
+        if not self._filtered:
+            self.update("[dim]  no matching commands[/dim]")
+            return
+        lines: list[str] = []
+        for i, (name, desc) in enumerate(self._filtered):
+            desc_part = f"  [dim]{escape(desc)}[/dim]" if desc else ""
+            if i == self._cursor:
+                lines.append(
+                    f"  [bold cyan]❯ /{escape(name)}[/bold cyan]{desc_part}"
+                )
+            else:
+                lines.append(
+                    f"    [cyan]/{escape(name)}[/cyan]{desc_part}"
+                )
+        lines.append(
+            "[dim]  ↑↓ navigate   tab/enter select   esc dismiss[/dim]"
+        )
+        self.update("\n".join(lines))
+
+
 class ChatTextArea(TextArea):
     """Enter 提交；Shift/Alt/Ctrl+J/Cmd+Enter 换行。"""
 
@@ -404,12 +485,36 @@ class ChatTextArea(TextArea):
             self.value = area.text
             super().__init__()
 
-    # Enter 提交；组合键插入换行；其余键交回 TextArea
+    # 输入内容以 / 开头且无空格时发布，query 为 / 之后的字符串；None 表示收起弹窗
+    class SlashChanged(Message):
+        def __init__(self, query: str | None) -> None:
+            self.query = query
+            super().__init__()
+
+    # 文本变化时检测 / 前缀，通知宿主 App 更新自动补全弹窗
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        text = self.text
+        if text.startswith("/") and " " not in text:
+            self.post_message(ChatTextArea.SlashChanged(query=text[1:]))
+        else:
+            self.post_message(ChatTextArea.SlashChanged(query=None))
+
+    # Enter 提交；↑↓/Tab/Esc 路由到自动补全弹窗；组合键插入换行
     async def _on_key(self, event: events.Key) -> None:
         key = event.key
+
+        popup: SlashCompleteWidget | None = None
+        try:
+            popup = self.app.query_one(SlashCompleteWidget)
+        except NoMatches:
+            popup = None
+
         if key == "enter":
             event.stop()
             event.prevent_default()
+            if popup is not None and popup.has_selection():
+                popup.select_current()
+                return
             if self.text.strip():
                 self.post_message(self.Submitted(self))
             return
@@ -424,6 +529,27 @@ class ChatTextArea(TextArea):
             if not self.read_only:
                 self.insert("\n")
             return
+        if popup is not None:
+            if key == "up":
+                event.stop()
+                event.prevent_default()
+                popup.move_up()
+                return
+            elif key == "down":
+                event.stop()
+                event.prevent_default()
+                popup.move_down()
+                return
+            elif key == "tab":
+                event.stop()
+                event.prevent_default()
+                popup.select_current()
+                return
+            elif key == "escape":
+                event.stop()
+                event.prevent_default()
+                self.post_message(ChatTextArea.SlashChanged(query=None))
+                return
         await super()._on_key(event)
 
 
@@ -472,6 +598,10 @@ class MyClaudeTuiApp(App[None]):
         self._busy = False
         # 最近一次 llm.user 报告的上下文水位（0~1）
         self._last_context_pct: float = 0.0
+        self._slash_items: list[tuple[str, str]] = []
+        self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
+        self._subagent_start_times: dict[str, float] = {}
+        self._subagent_llm_blocks: dict[str, LLMStreamBlock] = {}
 
     def compose(self) -> ComposeResult:
         yield Label(
@@ -485,6 +615,7 @@ class MyClaudeTuiApp(App[None]):
         )
 
     def on_mount(self) -> None:
+        self._slash_items = self._build_slash_items()
         self.run_worker(
             self._socket_loop(),
             exclusive=True,
@@ -494,6 +625,52 @@ class MyClaudeTuiApp(App[None]):
         if prompt is not None:
             prompt.disabled = True
             prompt.border_title = "connecting..."
+
+    # 构建斜杠命令候选列表：内建命令 + 所有已注册 skill
+    def _build_slash_items(self) -> list[tuple[str, str]]:
+        items: list[tuple[str, str]] = [("compact", "compress context window")]
+        try:
+            loader = SkillLoader()
+            for skill in loader.list_all_skills():
+                desc = skill.description.splitlines()[0] if skill.description else ""
+                if len(desc) > 60:
+                    desc = desc[:57] + "..."
+                items.append((skill.name, desc))
+        except Exception:
+            pass
+        return items
+
+    # 根据 / 前缀查询字符串挂载、更新或移除自动补全弹窗
+    def on_chat_text_area_slash_changed(
+        self, event: ChatTextArea.SlashChanged
+    ) -> None:
+        query = event.query
+        if query is None:
+            try:
+                self.query_one(SlashCompleteWidget).remove()
+            except NoMatches:
+                pass
+            return
+        try:
+            popup = self.query_one(SlashCompleteWidget)
+            popup.set_query(query)
+        except NoMatches:
+            popup = SlashCompleteWidget(self._slash_items)
+            self.mount(popup, before="#prompt")
+            popup.set_query(query)
+
+    # 用户选中自动补全项后将 /{name} 填入输入框并移除弹窗
+    def on_slash_complete_widget_selected(
+        self, event: SlashCompleteWidget.Selected
+    ) -> None:
+        prompt = self._prompt()
+        if prompt is not None:
+            prompt.text = f"/{event.skill_name} "
+            prompt.move_cursor(prompt.document.end)
+        try:
+            self.query_one(SlashCompleteWidget).remove()
+        except NoMatches:
+            pass
 
     def on_key(self, event: events.Key) -> None:
         log.debug(
@@ -850,6 +1027,8 @@ class MyClaudeTuiApp(App[None]):
                         "log.*",
                         "permission.*",
                         "context.*",
+                        "subagent.*",
+                        "skill.*",
                     ],
                     "scope": "global",
                 }
@@ -911,9 +1090,20 @@ class MyClaudeTuiApp(App[None]):
     # 根据事件 type 路由到对应渲染逻辑
     def _handle_event(self, event: dict[str, Any]) -> None:
         t = event.get("type", "")
+        run_id = str(event.get("run_id", ""))
 
         if t == "llm.token":
             token = str(event.get("token", ""))
+            if run_id in self._subagent_run_ids:
+                # 子 agent 的 token 进入独立的缩进块，不污染父 agent 的流
+                block = self._subagent_llm_blocks.get(run_id)
+                if block is None:
+                    block = LLMStreamBlock()
+                    block.styles.padding = (0, 2, 0, 6)
+                    self._append(block)
+                    self._subagent_llm_blocks[run_id] = block
+                block.append_token(token)
+                return
             if self._current_llm is None:
                 llm_block = LLMStreamBlock()
                 self._append(llm_block)
@@ -955,7 +1145,70 @@ class MyClaudeTuiApp(App[None]):
                 )
             )
 
+        elif t == "skill.invoked":
+            skill_name = str(event.get("skill_name", ""))
+            arguments = str(event.get("arguments", ""))
+            args_preview = _preview(arguments, 80) if arguments else ""
+            args_part = (
+                f"  [dim]{escape(args_preview)}[/dim]"
+                if args_preview
+                else ""
+            )
+            self._append(
+                Static(
+                    f"[bold cyan]/{escape(skill_name)}[/bold cyan]{args_part}",
+                    classes="log-line",
+                )
+            )
+
+        elif t == "subagent.started":
+            description = str(event.get("description", ""))
+            self._subagent_run_ids[run_id] = description
+            self._subagent_start_times[run_id] = time.monotonic()
+            short_id = run_id[:8] if len(run_id) >= 8 else run_id
+            self._append(
+                Static(
+                    f"[dim]┌─[/dim] [cyan]{escape(_preview(description, 72))}[/cyan]"
+                    f"  [dim]{escape(short_id)}[/dim]",
+                    classes="log-line",
+                )
+            )
+
+        elif t == "subagent.finished":
+            status = str(event.get("status", ""))
+            description = self._subagent_run_ids.pop(
+                run_id, str(event.get("description", ""))
+            )
+            start = self._subagent_start_times.pop(run_id, None)
+            block = self._subagent_llm_blocks.pop(run_id, None)
+            if block is not None:
+                block.finalize_markdown()
+            elapsed = (
+                f"  [dim]{time.monotonic() - start:.1f}s[/dim]"
+                if start is not None
+                else ""
+            )
+            desc_part = (
+                f"[cyan]{escape(_preview(description, 72))}[/cyan]{elapsed}"
+            )
+            if status == "success":
+                self._append(
+                    Static(
+                        f"[dim]└─[/dim] [bold green]✓[/bold green] {desc_part}",
+                        classes="log-line",
+                    )
+                )
+            else:
+                self._append(
+                    Static(
+                        f"[dim]└─[/dim] [bold red]✗[/bold red] {desc_part}",
+                        classes="log-line",
+                    )
+                )
+
         elif t == "step.started":
+            if run_id in self._subagent_run_ids:
+                return
             step = event.get("step", "")
             self._append(
                 Static(
@@ -966,6 +1219,11 @@ class MyClaudeTuiApp(App[None]):
             )
 
         elif t == "step.finished":
+            if run_id in self._subagent_run_ids:
+                block = self._subagent_llm_blocks.pop(run_id, None)
+                if block is not None:
+                    block.finalize_markdown()
+                return
             step = event.get("step", "")
             self._append(
                 Static(
@@ -983,6 +1241,8 @@ class MyClaudeTuiApp(App[None]):
             if not isinstance(params, dict):
                 params = {"value": params}
             block = ToolCallBlock(tool_name, params)
+            if run_id in self._subagent_run_ids:
+                block.styles.padding = (0, 2, 0, 6)
             self._pending_tool_blocks[tool_use_id] = block
             self._append(block)
 
@@ -1049,6 +1309,8 @@ class MyClaudeTuiApp(App[None]):
                 )
 
         elif t == "llm.user":
+            if run_id in self._subagent_run_ids:
+                return
             cache_read = event.get(
                 "cache_read_input_tokens", 0
             )
