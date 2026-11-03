@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 #type 在这里不是数据类型结构，是给类型起外号
 type CommandHandler=Callable[[dict[str, Any]], Awaitable [Any]]
 
-_MAX_LINE_BYTES = 1 * 1024 * 1024  # 1 MB per frame
+_MAX_LINE_BYTES = 64 * 1024 * 1024  # 64MB per frame
 writer_var: ContextVar[asyncio.StreamWriter] = ContextVar("writer_var")
 
 def _now()->str:

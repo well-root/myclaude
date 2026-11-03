@@ -50,6 +50,22 @@ class CompactionConfig:
     tool_result_limit: int = 8_000  # tool_result 截断触发字符数
     tool_result_keep: int = 4_000  # 截断后保留的前缀字符数
 
+@dataclass
+class McpServerConfig:
+    name:str
+    transport:str="stdio"
+    command:str=""
+    args:list[str]=field(default_factory=list)
+    env:dict[str,str]=field(default_factory=dict)
+    host:str="localhost"
+    port:int=3000 #host和port是给TCP的
+
+@dataclass
+class McpConfig:
+    servers: list[McpServerConfig] = field(default_factory=list)
+
+
+
 #定义myclaudeconfig
 @dataclass
 class myclaudeconfig:
@@ -61,6 +77,9 @@ class myclaudeconfig:
     trace:TraceConfig=field(default_factory=TraceConfig)
     permission:PermissionConfig=field(default_factory=PermissionConfig)
     compaction:CompactionConfig=field(default_factory=CompactionConfig)
+    mcp:McpConfig=field(default_factory=McpConfig)
+
+
 
 #默认值 → TOML → .env → 系统环境变量
 def get_config()->myclaudeconfig:
@@ -68,17 +87,23 @@ def get_config()->myclaudeconfig:
     # .env 必须在读取 MYCLAUDE_CONFIG 之前加载，以便 .env 中的 MYCLAUDE_CONFIG 能影响 TOML 路径
     load_dotenv(".env",override=False)
 
-    config_path=Path(os.environ.get("MYCLAUDE_CONFIG",_DEFAULT_CONFIG_PATH)).expanduser()
-    if config_path.exists():
-        try:
+    explicit = os.environ.get("MYCLAUDE_CONFIG")
+    if explicit:
+        config_paths = [Path(explicit).expanduser()]
+    else:
+        config_paths = [
+            Path(_DEFAULT_CONFIG_PATH).expanduser(),
+            Path(".myclaude/config.toml"),
+        ]
 
-            with open(config_path,"rb") as f:
-
-                data=tomllib.load(f)
-        except tomllib.TOMLDecodeError as e:
-
-            raise SystemExit(f"Config parse error({config_path}): {e}") from e
-        _apply_toml(config,data)
+    for config_path in config_paths:
+        if config_path.is_file():
+            try:
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
+            except tomllib.TOMLDecodeError as e:
+                raise SystemExit(f"Config parse error({config_path}): {e}") from e
+            _apply_toml(config, data)
     _apply_env(config)
     return config
 
@@ -254,6 +279,79 @@ def _apply_toml(config:myclaudeconfig,data:dict[str,Any])->None:
                 "Config error: compaction.tool_result_keep "
                 "must be smaller than compaction.tool_result_limit"
             )
+
+        if "mcp" in data:
+            mcp = data["mcp"]
+            if not isinstance(mcp, dict):
+                raise SystemExit("Config error: [mcp] must be a table")
+            unknown_mcp: set[str] = set(mcp.keys()) - {"servers"}
+            if unknown_mcp:
+                raise SystemExit(
+                    "Unknown [mcp] keys: " + ", ".join(sorted(unknown_mcp))
+                )
+            servers_raw = mcp.get("servers", [])
+            if not isinstance(servers_raw, list):
+                raise SystemExit("Config error: mcp.servers must be an array of tables")
+            for i, srv in enumerate(servers_raw):
+                if not isinstance(srv, dict):
+                    raise SystemExit(
+                        f"Config error: mcp.servers[{i}] must be a table"
+                    )
+                name = srv.get("name")
+                if not isinstance(name, str) or not name:
+                    raise SystemExit(
+                        f"Config error: mcp.servers[{i}].name "
+                        "must be a non-empty string"
+                    )
+                transport = srv.get("transport", "stdio")
+                if transport not in ("stdio", "tcp"):
+                    raise SystemExit(
+                        f"Config error: mcp.servers[{i}].transport "
+                        "must be 'stdio' or 'tcp'"
+                    )
+                server = McpServerConfig(name=name, transport=transport)
+                if "command" in srv:
+                    val = srv["command"]
+                    if not isinstance(val, str):
+                        raise SystemExit(
+                            f"Config error: mcp.servers[{i}].command must be a string"
+                        )
+                    server.command = val
+                if "args" in srv:
+                    val = srv["args"]
+                    if not isinstance(val, list):
+                        raise SystemExit(
+                            f"Config error: mcp.servers[{i}].args must be an array"
+                        )
+                    server.args = [str(a) for a in val]
+                if "env" in srv:
+                    val = srv["env"]
+                    if not isinstance(val, dict):
+                        raise SystemExit(
+                            f"Config error: mcp.servers[{i}].env must be a table"
+                        )
+                    server.env = {str(k): str(v) for k, v in val.items()}
+                if "host" in srv:
+                    val = srv["host"]
+                    if not isinstance(val, str):
+                        raise SystemExit(
+                            f"Config error: mcp.servers[{i}].host must be a string"
+                        )
+                    server.host = val
+                if "port" in srv:
+                    val = srv["port"]
+                    if not isinstance(val, int) or isinstance(val, bool):
+                        raise SystemExit(
+                            f"Config error: mcp.servers[{i}].port must be an integer"
+                        )
+                    server.port = val
+                # 项目本地配置覆盖全局同名 server
+                config.mcp.servers = [
+                    existing
+                    for existing in config.mcp.servers
+                    if existing.name != server.name
+                ]
+                config.mcp.servers.append(server)
 
 
 #布尔解析器
