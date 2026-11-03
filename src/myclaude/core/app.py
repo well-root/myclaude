@@ -37,7 +37,9 @@ from myclaude.core.config import get_config, myclaudeconfig
 from myclaude.core.events.bus import EventBus
 from myclaude.core.logging_setup import setup_logging
 from myclaude.core.llm.provider import AnthropicProvider
+from myclaude.core.mcp.server import McpServerManager
 from myclaude.core.runner import AgentRunner
+from myclaude.core.subagent.registry import BackgroundTaskRegistry
 
 from myclaude.core.runs import events_file, new_run_id
 from myclaude.core.session import SessionManager, SessionStore
@@ -68,6 +70,8 @@ class coreAPP:
         self.config:myclaudeconfig|None=None
         self.sessions:SessionManager|None=None
         self.permission_manager:PermissionManager|None=None
+        self.mcp_manager:McpServerManager|None=None
+        self.task_registry:BackgroundTaskRegistry=BackgroundTaskRegistry()
 
 
     #处理core.ping返回版本
@@ -278,6 +282,12 @@ class coreAPP:
         )
 
 
+        # MCP：daemon 启动时连接所有配置的 server，失败只记录日志不阻塞启动
+        self.mcp_manager = McpServerManager()
+        if self.config.mcp.servers:
+            logger.info("mcp: starting %d server(s)", len(self.config.mcp.servers))
+            await self.mcp_manager.start_all(self.config.mcp.servers)
+
         #集中会话数据 放到用户目录；tool_result 截断阈值来自 [compaction]
         store = SessionStore(
             Path("~/.myclaude/sessions").expanduser(),
@@ -291,6 +301,8 @@ class coreAPP:
                 bus=self.bus,
                 trace=self.trace,
                 permission_manager=self.permission_manager,
+                mcp_manager=self.mcp_manager,
+                task_registry=self.task_registry,
             ),
             bus=self.bus,
             # 只有真正执行 /compact 时才创建 provider，避免无 API key 时 daemon 启动失败
@@ -355,6 +367,10 @@ class coreAPP:
                 return_exceptions=True,
             )
 
+        await self.task_registry.cancel_all()
+        if self.mcp_manager is not None:
+            await self.mcp_manager.stop_all()
+
         await server.stop()
         if self.trace is not None:
             await self.trace.stop()
@@ -363,5 +379,3 @@ class coreAPP:
     #启动coreapp
 def run()->None:
     asyncio.run(coreAPP().run())
-
-
