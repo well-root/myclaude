@@ -57,7 +57,7 @@ class SessionStore:
         if run_id is not None:
             row["run_id"]=run_id
         path=self.session_dir(sid)
-        path.parent.mkdir(exist_ok=True,parents=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         with (path / "thread.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 #增加

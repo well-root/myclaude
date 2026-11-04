@@ -95,7 +95,7 @@ class AgentRunner:
                             run_id:str|None=None,
                             session:Session|None=None,
                             store:SessionStore|None=None,
-                            systen_prompt_override:str|None=None,
+                            system_prompt_override:str|None=None,
                             tool_whitelist:list[str]|None=None,
                             )->RunOutcome:
         run_id =  run_id or new_run_id()
@@ -127,7 +127,7 @@ class AgentRunner:
             session_notes=notes,
             global_context=global_ctx,
             project_context=project_ctx,
-            system_prompt_override=systen_prompt_override,
+            system_prompt_override=system_prompt_override,
         )
 
         # 历史消息已经全部在 thread 里，run 结束后只追加新增部分。
@@ -238,7 +238,7 @@ class AgentRunner:
                         session_id: str = "",
                         tool_whitelist: list[str] | None = None,
     ) -> ToolRegistry:
-        allowed:set[str] = set((tool_whitelist) if tool_whitelist is not None else None)
+        allowed:set[str] |None = (set(tool_whitelist) if tool_whitelist is not None else None)
         def _ok(name:str) -> bool:
             return allowed is  None or name in allowed
         registry = ToolRegistry()

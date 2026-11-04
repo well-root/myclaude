@@ -13,11 +13,13 @@ from myclaude.core.bus.events import (
     SessionMessageReceivedEvent,
     SessionResumedEvent,
     SessionWaitingForInputEvent,
+    SkillInvokedEvent,
 )
 from myclaude.core.events.bus import EventBus
 from myclaude.core.runs import new_run_id
 from myclaude.core.session.model import Session, SessionMode
 from myclaude.core.session.store import SessionStore
+from myclaude.core.skills.loader import SkillLoader
 
 if TYPE_CHECKING:
     from myclaude.core.llm.base import LLMProvider
@@ -50,6 +52,7 @@ class SessionManager:
         self._provider_factory = provider_factory
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._skill_loader = SkillLoader()
 
 #创建session 然后写入josn
     async def create(self,mode:SessionMode,title:str="")->Session:
@@ -88,6 +91,32 @@ class SessionManager:
                     SessionResumedEvent(session_id=sid, ts=_now())
                 )
 
+            run_id = run_id or new_run_id()
+
+            # Skill 解析：/review 这类输入仍然是 thread 里的原始用户消息，
+            # 但把渲染后的 skill prompt 作为 system_prompt_override 传给 runner。
+            goal = content
+            system_prompt_override: str | None = None
+            tool_whitelist: list[str] | None = None
+            if content.startswith("/") and len(content) > 1:
+                parts = content[1:].split(None, 1)
+                skill_name = parts[0] if parts else ""
+                arguments = parts[1] if len(parts) > 1 else ""
+                skill = self._skill_loader.resolve(skill_name)
+                if skill is not None:
+                    system_prompt_override = self._skill_loader.render_prompt(
+                        skill, arguments
+                    )
+                    tool_whitelist = skill.allowed_tools or None
+                    await self._bus.publish(
+                        SkillInvokedEvent(
+                            skill_name=skill_name,
+                            arguments=arguments,
+                            run_id=run_id,
+                            ts=_now(),
+                        )
+                    )
+
             #先写进thread 再启动runner
             self._store.append_message(sid, "user", content)
             await self._bus.publish(
@@ -99,17 +128,18 @@ class SessionManager:
             if not session.title:
                 session.title = content[:40]
 
-            run_id = run_id or new_run_id()
             session.run_ids.append(run_id)
             session.updated_at = _now()
             self._store.write_meta(session)
 
             runner = self._runner_factory()
             await runner.run_and_capture(
-                content,
+                goal,
                 run_id=run_id,
                 session=session,
                 store=self._store,
+                system_prompt_override=system_prompt_override,
+                tool_whitelist=tool_whitelist,
             )
 
             session.updated_at = _now()
@@ -215,3 +245,4 @@ class SessionManager:
         if session is None:
             raise HandlerError(SESSION_NOT_FOUND, "session not found")
         return session
+
